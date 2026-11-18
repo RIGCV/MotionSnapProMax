@@ -1,4 +1,4 @@
-﻿import test from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import { MotionDetector } from "../src/motion.js";
 import { CaptureGate, saveBlob } from "../src/capture.js";
@@ -33,27 +33,31 @@ test("multiple independent moving objects produce multiple regions", () => {
   d.analyze(image());
   assert.equal(d.analyze(box(box(image(), 4, 5), 26, 19)).regions.length, 2);
 });
-for (let seconds = 1; seconds <= 5; seconds++)
-  test(`capture gate enforces ${seconds} second interval and does not capture static frames`, async () => {
-    const g = new CaptureGate();
-    let count = 0;
-    const run = (now, active = true, enabled = true) =>
-      g.attempt(
-        { now, interval: seconds * 1000, active, enabled },
-        async () => {
-          count++;
-        },
-      );
-    assert.equal(await run(0), true);
-    assert.equal(await run(seconds * 1000 - 1), false);
-    assert.equal(await run(seconds * 1000, false), false);
-    assert.equal(await run(seconds * 1000, true, false), false);
-    assert.equal(await run(seconds * 1000), true);
-    assert.equal(count, 2);
-  });
-test("writes cannot overlap, cancellation and failures do not consume capture interval", async () => {
+test("consecutive motion frames save immediately without interval; static or disabled frames do not save", async () => {
+  const gate = new CaptureGate();
+  let count = 0;
+  const save = async () => {
+    count++;
+  };
+  for (let i = 0; i < 25; i++)
+    assert.equal(
+      await gate.attempt({ active: true, enabled: true }, save),
+      true,
+    );
+  assert.equal(count, 25);
+  assert.equal(
+    await gate.attempt({ active: false, enabled: true }, save),
+    false,
+  );
+  assert.equal(
+    await gate.attempt({ active: true, enabled: false }, save),
+    false,
+  );
+  assert.equal(count, 25);
+});
+test("writes cannot overlap; cancellation and failure release the writer", async () => {
   const g = new CaptureGate(),
-    args = { now: 0, interval: 1000, active: true, enabled: true };
+    args = { active: true, enabled: true };
   let release;
   const pending = g.attempt(args, () => new Promise((r) => (release = r)));
   assert.equal(await g.attempt(args, () => assert.fail()), false);
@@ -104,4 +108,34 @@ test("file save commits through close and aborts after write error", async () =>
     ),
   );
   assert.equal(aborted, true);
+});
+
+import { screenshotsDirectory } from "../src/folder.js";
+test("Screenshots is created once and reused without clearing existing files", async () => {
+  const folders = new Map();
+  let calls = 0;
+  const parent = {
+    getDirectoryHandle: async (name, options) => {
+      calls++;
+      assert.equal(name, "Screenshots");
+      assert.deepEqual(options, { create: true });
+      if (!folders.has(name)) folders.set(name, { files: ["existing.png"] });
+      return folders.get(name);
+    },
+  };
+  const a = await screenshotsDirectory(parent),
+    b = await screenshotsDirectory(parent);
+  assert.equal(a, b);
+  assert.deepEqual(b.files, ["existing.png"]);
+  assert.equal(calls, 2);
+});
+test("folder access failure propagates without choosing another location", async () => {
+  await assert.rejects(
+    screenshotsDirectory({
+      getDirectoryHandle: async () => {
+        throw new Error("Permission denied");
+      },
+    }),
+    /Permission denied/,
+  );
 });

@@ -3,88 +3,90 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#f3f5f7" />
-    <meta
-      name="description"
-      content="摄像头实时监测，移动时自动保存带框截图。"
-    />
-    <title>MotionSnap · 实时监测</title>
+    <meta name="theme-color" content="#101b2b" />
+    <title>MotionSnap · 实时监测工作台</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="./" aria-label="MotionSnap 首页"
-          ><span class="brand-icon">M</span><strong>MotionSnap</strong
-          ><span class="brand-subtitle">实时监测</span></a
+        <a class="brand" href="./"
+          ><span class="brand-mark">M</span><strong>MotionSnap</strong
+          ><span>实时监测工作台</span></a
         >
         <div class="top-right">
-          <span class="privacy">画面仅在本机处理</span
-          ><span id="sessionBadge" class="session-badge">摄像头未开启</span
-          ><a
-            class="source-link"
-            href="https://github.com/RIGCV/MotionSnapProMax"
-            target="_blank"
-            rel="noopener noreferrer"
-            >GitHub</a
-          >
+          <span>本地处理 · 画面不上传</span
+          ><span id="sessionBadge" class="session-badge">摄像头未开启</span>
         </div>
       </header>
       <main class="workspace">
-        <div class="main-column">
-          <section class="viewer-panel" aria-label="实时摄像头画面">
-            <div class="panel-toolbar">
-              <h1>
-                <i id="liveDot" class="status-dot"></i
-                ><span id="sourceTitle">实时画面</span>
-              </h1>
-              <span id="sourceResolution">摄像头未连接</span>
-            </div>
-            <div class="stage" id="stage">
-              <video id="video" playsinline muted hidden></video
-              ><canvas
-                id="canvas"
-                aria-label="带检测框的实时画面"
-                hidden
-              ></canvas>
-              <div class="empty-state" id="emptyState">
-                <svg
-                  width="44"
-                  height="44"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.4"
-                  aria-hidden="true"
-                >
-                  <rect x="3" y="6" width="18" height="14" rx="3" />
-                  <path d="m8 6 2-3h4l2 3" />
-                  <circle cx="12" cy="13" r="4" />
-                </svg>
-                <h2>摄像头尚未开启</h2>
-                <p>开启后实时监测，发现移动自动截图</p>
-                <button id="emptyStart" class="primary">开启摄像头</button>
-              </div>
-              <div class="stage-label" id="stageLabel" hidden>
-                <i class="status-dot"></i><span id="stageStatus">正在监测</span>
-              </div>
-              <span class="stage-clock" id="stageClock" hidden></span>
-            </div>
-            <div class="viewer-bottom">
-              <span id="statusText" role="status" aria-live="polite"
-                >准备就绪</span
+        <section class="viewer-panel" aria-label="完整摄像头画面">
+          <div class="panel-toolbar">
+            <h1>
+              <i id="liveDot" class="status-dot"></i
+              ><span id="sourceTitle">实时画面</span>
+            </h1>
+            <span id="sourceResolution">等待连接</span
+            ><button id="fullscreen" class="text-button">画面全屏</button>
+          </div>
+          <div class="stage" id="stage">
+            <video id="video" playsinline muted hidden></video
+            ><canvas
+              id="canvas"
+              aria-label="带检测框的完整摄像头画面"
+              hidden
+            ></canvas>
+            <div id="emptyState" class="empty-state">
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                aria-hidden="true"
               >
-              <div class="viewer-actions">
-                <button id="snapshot" class="icon-button" disabled>
-                  手动截图</button
-                ><button
-                  id="fullscreen"
-                  class="icon-button"
-                  aria-label="全屏查看"
-                >
-                  全屏
-                </button>
-              </div>
+                <rect x="3" y="6" width="18" height="14" rx="3" />
+                <path d="m8 6 2-3h4l2 3" />
+                <circle cx="12" cy="13" r="4" />
+              </svg>
+              <h2>摄像头尚未开启</h2>
+              <p>连接摄像头，实时检测并保存移动画面</p>
+              <button id="emptyStart" class="primary">开启摄像头</button>
+            </div>
+            <div id="stageLabel" class="stage-label" hidden>
+              <i class="status-dot"></i><span id="stageStatus">正在监测</span>
+            </div>
+            <span id="stageClock" class="stage-clock" hidden></span>
+          </div>
+          <div class="viewer-bottom">
+            <span id="statusText" role="status"
+              >准备就绪 · 首次启动时请选择桌面并授权</span
+            ><span class="legend">实线：目标　橙色虚线：移动</span>
+          </div>
+        </section>
+        <aside class="sidebar" aria-label="监测控制台">
+          <section class="control-panel camera-panel">
+            <div class="action-grid">
+              <button id="start" class="primary">开始监测</button
+              ><button id="stop" class="danger" disabled>停止监测</button
+              ><button id="snapshot" class="secondary" disabled>手动截图</button
+              ><button id="chooseFolder" class="secondary">选择桌面目录</button>
+            </div>
+            <label class="field device-field"
+              ><span>摄像头</span
+              ><select id="cameraSelect">
+                <option value="">默认摄像头</option>
+              </select></label
+            >
+          </section>
+          <section class="control-panel">
+            <div class="section-heading">
+              <h2>运行状态</h2>
+              <span class="engine-status"
+                ><i id="engineDot" class="status-dot"></i
+                ><span id="engineStatus">YOLO26n · 等待启动</span></span
+              >
             </div>
             <div class="stats">
               <div>
@@ -96,7 +98,7 @@
                 ><small>个</small>
               </div>
               <div>
-                <span>画面状态</span
+                <span>画面动态</span
                 ><strong id="motionState" class="word-stat">待监测</strong>
               </div>
               <div>
@@ -104,124 +106,56 @@
                 ><small>张</small>
               </div>
             </div>
-          </section>
-          <section class="gallery-panel">
-            <div class="results-heading">
-              <h2>最近截图 <span id="galleryCount">00</span></h2>
-              <span class="muted">最近 8 张 · 点击下载</span>
-            </div>
-            <div id="gallery" class="gallery">
-              <div class="gallery-empty">暂无截图，保存后在此预览</div>
-            </div>
-          </section>
-          <details class="results-panel">
-            <summary>目标详情 <span id="listCount">00</span></summary>
-            <div class="results-content">
-              <div class="legend">实线：识别目标 · 橙色虚线：移动区域</div>
-              <div id="targetList" class="target-list">
-                <div class="list-empty">暂无识别目标</div>
-              </div>
-            </div>
-          </details>
-        </div>
-        <aside class="sidebar" aria-label="摄像头与截图设置">
-          <section class="control-panel camera-panel">
-            <h2>摄像头</h2>
-            <label class="field device-field"
-              ><span class="sr-only">视频设备</span
-              ><select id="cameraSelect">
-                <option value="">默认摄像头</option>
-              </select></label
-            >
-            <div class="action-row">
-              <button id="start" class="primary">开始监测</button
-              ><button id="stop" class="stop-button" disabled>停止</button>
+            <div class="status-row">
+              <span>推理耗时 <b id="latency">—</b> ms</span
+              ><span>最近保存 <b id="lastSaved">—</b></span>
             </div>
             <div id="loadProgress" class="load-progress" hidden>
               <progress id="progress" max="100" value="0"></progress
               ><span id="loadText">正在准备模型…</span>
             </div>
-            <div class="engine-status">
-              <i id="engineDot" class="status-dot"></i
-              ><span id="engineStatus">YOLO26n · 等待启动</span>
-            </div>
           </section>
-          <section class="control-panel capture-panel">
-            <div class="control-heading">
-              <h2>移动自动截图</h2>
-              <label class="toggle" title="开启或关闭自动截图"
-                ><input
-                  id="autoCapture"
-                  type="checkbox"
-                  aria-label="开启自动截图"
-                  checked /><span class="switch"></span
-              ></label>
-            </div>
-            <div class="capture-options">
+          <section class="control-panel parameters">
+            <h2>检测参数</h2>
+            <div class="parameter-grid">
               <label class="field"
-                ><span>截图间隔</span
-                ><select id="captureInterval">
-                  <option value="1">每 1 秒</option>
-                  <option value="2">每 2 秒</option>
-                  <option value="3">每 3 秒</option>
-                  <option value="4">每 4 秒</option>
-                  <option value="5">每 5 秒</option>
-                </select></label
-              ><label class="field"
                 ><span>移动灵敏度</span
                 ><select id="sensitivity">
-                  <option value="high">高</option>
-                  <option value="medium">中</option>
-                  <option value="low">低</option>
+                  <option value="high">高 · 细微移动</option>
+                  <option value="medium">中 · 降低噪声</option>
+                  <option value="low">低 · 明显移动</option>
                 </select></label
-              >
-            </div>
-            <div class="folder-card">
-              <span class="field-label">保存位置</span
-              ><strong id="folderName">尚未选择文件夹</strong
-              ><button id="chooseFolder" class="secondary">
-                选择保存文件夹
-              </button>
-            </div>
-            <div
-              id="captureStatus"
-              class="capture-status"
-              role="status"
-              aria-live="polite"
-            >
-              选择文件夹并授权后自动保存
-            </div>
-          </section>
-          <details class="control-panel advanced">
-            <summary>识别与显示设置 <span>＋</span></summary>
-            <div class="advanced-content">
-              <p class="help">
-                移动时截图，静止时暂停。请固定摄像头并保持页面在前台；光影变化也可能触发截图。
-              </p>
-              <label class="field"
-                ><span>运行方式</span
-                ><select id="backend">
-                  <option value="auto">自动 · 优先 GPU</option>
-                  <option value="wasm">兼容模式 · CPU</option>
+              ><label class="field"
+                ><span>识别类别</span
+                ><select id="category">
+                  <option value="all">全部类别</option>
+                  <option value="person">人员</option>
+                  <option value="traffic">人员与交通</option>
+                  <option value="animals">动物</option>
                 </select></label
               ><label class="field"
                 ><span>模型精度</span
                 ><select id="quality">
-                  <option value="320">速度优先 · 320 × 320</option>
-                  <option value="640">细节优先 · 640 × 640</option>
+                  <option value="320">320 · 速度优先</option>
+                  <option value="640">640 · 细节优先</option>
                 </select></label
               ><label class="field"
-                ><span>目标类别</span
-                ><select id="category">
-                  <option value="all">全部类别 · 80 类</option>
-                  <option value="person">仅人员</option>
-                  <option value="traffic">人员与交通工具</option>
-                  <option value="animals">动物</option>
+                ><span>运行方式</span
+                ><select id="backend">
+                  <option value="auto">自动 · GPU 优先</option>
+                  <option value="wasm">CPU · 兼容模式</option>
+                </select></label
+              ><label class="field"
+                ><span>AI 检测上限</span
+                ><select id="speed">
+                  <option value="30" selected>30 FPS</option>
+                  <option value="15">15 FPS</option>
+                  <option value="5">5 FPS</option>
                 </select></label
               >
               <div class="field">
                 <label for="confidence"
-                  >置信度阈值 <output id="confidenceValue">35%</output></label
+                  >置信度 <output id="confidenceValue">35%</output></label
                 ><input
                   id="confidence"
                   type="range"
@@ -231,26 +165,55 @@
                   step="5"
                 />
               </div>
-              <label class="field"
-                ><span>检测频率上限</span
-                ><select id="speed">
-                  <option value="30">30 FPS</option>
-                  <option value="15" selected>15 FPS</option>
-                  <option value="5">5 FPS</option>
-                </select></label
-              ><label class="switch-row"
-                ><span>显示运动轨迹</span
-                ><input id="trails" type="checkbox" checked /><span
-                  class="switch"
-                ></span
-              ></label>
-              <p class="help">
-                类别与置信度只影响 AI 识别，不限制画面移动触发。<br />当前 AI
-                处理耗时：<span id="latency">—</span> ms
-              </p>
             </div>
-          </details>
-          <div class="engine-footer" id="footerEngine">YOLO26n · 本地推理</div>
+            <div class="toggle-row">
+              <label
+                ><input
+                  id="autoCapture"
+                  type="checkbox"
+                  checked
+                />移动即截图</label
+              ><label
+                ><input id="trails" type="checkbox" checked />显示轨迹</label
+              ><span>无定时间隔</span>
+            </div>
+          </section>
+          <section class="control-panel storage-panel">
+            <div class="section-heading">
+              <h2>截图保存</h2>
+              <span class="small">PNG · 本地文件夹</span>
+            </div>
+            <div id="folderName" class="folder-path">
+              桌面 / Screenshots（待授权）
+            </div>
+            <div
+              id="captureStatus"
+              class="capture-status"
+              role="status"
+              aria-live="polite"
+            >
+              首次启动选择桌面，自动检查或创建 Screenshots
+            </div>
+          </section>
+          <section class="control-panel preview-panel">
+            <div class="section-heading">
+              <h2>最近截图 <span id="galleryCount">00</span></h2>
+              <span class="small">点击下载</span>
+            </div>
+            <div id="gallery" class="gallery">
+              <div class="gallery-empty">暂无截图</div>
+            </div>
+            <div class="target-heading">
+              当前目标 <span id="listCount">00</span>
+            </div>
+            <div id="targetList" class="target-list">
+              <div class="list-empty">暂无识别目标</div>
+            </div>
+          </section>
+          <div class="bottom-note">
+            <span>请固定机位并保持页面前台；光影变化可能触发。</span
+            ><span id="footerEngine">YOLO26n · 本地推理</span>
+          </div>
         </aside>
       </main>
     </div>

@@ -1,20 +1,13 @@
+// One write in flight: never queue stale camera frames or impose a timer.
 export class CaptureGate {
   constructor() {
-    this.lastCapture = -Infinity;
     this.busy = false;
   }
-  reset() {
-    this.lastCapture = -Infinity;
-  }
-  async attempt({ now, interval, active, enabled }, capture) {
-    if (!active || !enabled || this.busy || now - this.lastCapture < interval)
-      return false;
+  async attempt({ active, enabled }, capture) {
+    if (!active || !enabled || this.busy) return false;
     this.busy = true;
     try {
-      const result = await capture();
-      if (result === false) return false;
-      this.lastCapture = now;
-      return true;
+      return (await capture()) !== false;
     } finally {
       this.busy = false;
     }

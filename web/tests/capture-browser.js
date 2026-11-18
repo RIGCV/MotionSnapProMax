@@ -1,4 +1,4 @@
-﻿const html = await (await fetch("/")).text();
+const html = await (await fetch("/")).text();
 const parsed = new DOMParser().parseFromString(html, "text/html");
 document.body.innerHTML = parsed.body.innerHTML;
 document.querySelectorAll("script").forEach((s) => s.remove());
@@ -45,7 +45,8 @@ const until = async (fn, timeout = 90000) => {
 try {
   await import("../src/main.js");
   await document.getElementById("chooseFolder").onclick();
-  document.getElementById("captureInterval").value = "1";
+  const testFolder = await directory.getDirectoryHandle("Screenshots");
+  await testFolder.getFileHandle("preserved.txt", { create: true });
   document.getElementById("start").click();
   await until(
     () => Number(document.getElementById("savedCount").textContent) >= 3,
@@ -58,7 +59,10 @@ try {
     throw new Error("Static scene kept saving");
   document.getElementById("stop").click();
   const entries = [];
-  for await (const [name, handle] of directory.entries()) {
+  for await (const [name, handle] of (
+    await directory.getDirectoryHandle("Screenshots")
+  ).entries()) {
+    if (name === "preserved.txt") continue;
     const file = await handle.getFile();
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (
@@ -74,15 +78,6 @@ try {
     bitmap.close();
     entries.push({ name, size: file.size });
   }
-  const times = entries
-    .map((e) => {
-      const m = e.name.match(/_(\d{2})(\d{2})(\d{2})_(\d{3})_/);
-      return ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + +m[4];
-    })
-    .sort((a, b) => a - b);
-  for (let i = 1; i < times.length; i++)
-    if (times[i] - times[i - 1] < 990)
-      throw new Error("Capture interval too short");
   if (entries.length !== before) throw new Error("Saved counter mismatch");
   report.textContent =
     "PASS: synthetic moving objects triggered " +
