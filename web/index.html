@@ -1,57 +1,259 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#101715" />
-  <meta name="description" content="MotionSnap Pro Max：在浏览器本地运行的实时多目标检测与运动追踪。无需安装，视频不上传。" />
-  <title>MotionSnap Pro Max · 实时多目标检测</title>
-  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-</head>
-<body>
-  <div class="app-shell">
-    <header class="topbar">
-      <a class="brand" href="./" aria-label="MotionSnap 首页"><span class="brand-icon">M<span>↗</span></span><span>MotionSnap <b>PRO MAX</b></span></a>
-      <div class="top-right"><span class="privacy"><i></i> 视频仅在本机处理</span><a href="https://github.com/RIGCV/MotionSnapProMax" target="_blank" rel="noopener noreferrer" class="source-link">GitHub ↗</a></div>
-    </header>
-    <main>
-      <div class="page-heading"><div><div class="eyebrow">YOUR BROWSER. YOUR VISION.</div><h1>捕捉动态，看见每个目标<span>。</span></h1><p>打开摄像头或载入视频，让轻量 AI 在你的设备上实时工作。</p></div><span class="model-tag"><span>◈</span> YOLO26 nano <small>LOCAL AI</small></span></div>
-      <div class="workspace">
-        <section class="viewer-panel" aria-label="检测画面">
-          <div class="panel-toolbar"><div class="section-name"><span class="status-dot" id="liveDot"></span><span id="sourceTitle">检测工作台</span></div><span id="sourceResolution" class="mono">等待输入源</span></div>
-          <div class="stage" id="stage">
-            <video id="video" playsinline muted hidden></video>
-            <canvas id="canvas" aria-label="检测结果画面" hidden></canvas>
-            <div class="empty-state" id="emptyState"><div class="viewfinder"><span>◎</span></div><h2>每一次移动，都清晰可见</h2><p>连接摄像头，或选择一段本地视频<br>支持同时检测多个目标，并显示运动轨迹</p><button id="emptyStart" class="primary">开启摄像头 <span>↗</span></button><button id="emptyDemo" class="text-button">先用示例图片体验 →</button></div>
-            <div class="stage-label" id="stageLabel" hidden><span class="status-dot"></span><span id="stageStatus">正在检测</span></div>
-          </div>
-          <div class="viewer-bottom"><span id="statusText" role="status" aria-live="polite">准备就绪 · 选择输入源开始体验</span><div class="viewer-actions"><button id="snapshot" class="icon-button" disabled title="下载带检测框的截图">↓ 截图</button><button id="fullscreen" class="icon-button" title="全屏查看">⛶ 全屏</button></div></div>
-          <div class="stats"><div><span>检测帧率</span><strong id="fps">—</strong><small>FPS</small></div><div><span>处理耗时</span><strong id="latency">—</strong><small>ms / 帧</small></div><div><span>当前目标</span><strong id="targetCount">0</strong><small>个</small></div><div><span>移动目标</span><strong id="movingCount">0</strong><small>个</small></div></div>
-        </section>
-        <aside class="control-panel" aria-label="检测设置">
-          <div class="control-heading"><h2>检测控制</h2><span class="mini-label">CONTROL</span></div>
-          <fieldset class="source-tabs"><legend class="sr-only">输入源</legend><label><input type="radio" name="source" value="camera" checked /><span>摄像头</span></label><label><input type="radio" name="source" value="file" /><span>本地文件</span></label><label><input type="radio" name="source" value="demo" /><span>示例体验</span></label></fieldset>
-          <div id="cameraOptions" class="source-options"><label for="cameraSelect">视频设备</label><select id="cameraSelect"><option value="">默认摄像头</option></select><p class="help">首次开启时，请允许浏览器访问摄像头。</p></div>
-          <div id="fileOptions" class="source-options" hidden><label for="fileInput" class="upload-area"><span>＋</span><strong id="fileName">选择视频或图片</strong><small>文件只在本地读取，不会上传</small></label><input id="fileInput" type="file" accept="video/*,image/*" class="sr-only" /></div>
-          <div id="demoOptions" class="source-options" hidden><p class="demo-description">用街景示例体验多目标检测。示例为静态图片，不产生运动轨迹。</p></div>
-          <div class="control-divider"></div>
-          <div class="field"><label for="backend">运行方式</label><select id="backend"><option value="auto">自动 · 优先 GPU 加速</option><option value="wasm">兼容模式 · CPU</option></select></div>
-          <div class="field"><label for="quality">模型精度</label><select id="quality"><option value="320">速度优先 · 320 × 320</option><option value="640">细节优先 · 640 × 640</option></select></div>
-          <div class="field"><label for="category">检测类别</label><select id="category"><option value="all">全部类别 · 80 类</option><option value="person">仅人员</option><option value="traffic">人员与交通工具</option><option value="animals">动物</option></select></div>
-          <div class="field"><label for="confidence">置信度阈值 <output id="confidenceValue">35%</output></label><input id="confidence" type="range" min="15" max="85" value="35" step="5" /><div class="range-labels"><span>更多目标</span><span>更高置信度</span></div></div>
-          <div class="field"><label for="speed">检测频率</label><select id="speed"><option value="30">流畅 · 最高 30 FPS</option><option value="15" selected>均衡 · 最高 15 FPS</option><option value="5">节能 · 最高 5 FPS</option></select></div>
-          <label class="switch-row"><span>显示运动轨迹</span><input id="trails" type="checkbox" checked /><span class="switch"></span></label>
-          <label class="switch-row"><span>仅显示移动目标</span><input id="movingOnly" type="checkbox" /><span class="switch"></span></label>
-          <p class="help motion-help">运动判断适用于固定机位；移动相机可能使背景目标被判定为移动。</p>
-          <div class="action-row"><button id="start" class="primary">开始检测 <span>▶</span></button><button id="stop" class="stop-button" disabled aria-label="停止检测">■ 停止</button></div>
-          <div class="load-progress" id="loadProgress" hidden><progress id="progress" max="100" value="0"></progress><span id="loadText">正在准备模型…</span></div>
-          <div class="engine-status"><span class="status-dot" id="engineDot"></span><span id="engineStatus">模型尚未加载</span></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f3f5f7" />
+    <meta
+      name="description"
+      content="摄像头实时监测，移动时自动保存带框截图。"
+    />
+    <title>MotionSnap · 实时监测</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="./" aria-label="MotionSnap 首页"
+          ><span class="brand-icon">M</span><strong>MotionSnap</strong
+          ><span class="brand-subtitle">实时监测</span></a
+        >
+        <div class="top-right">
+          <span class="privacy">画面仅在本机处理</span
+          ><span id="sessionBadge" class="session-badge">摄像头未开启</span
+          ><a
+            class="source-link"
+            href="https://github.com/RIGCV/MotionSnapProMax"
+            target="_blank"
+            rel="noopener noreferrer"
+            >GitHub</a
+          >
+        </div>
+      </header>
+      <main class="workspace">
+        <div class="main-column">
+          <section class="viewer-panel" aria-label="实时摄像头画面">
+            <div class="panel-toolbar">
+              <h1>
+                <i id="liveDot" class="status-dot"></i
+                ><span id="sourceTitle">实时画面</span>
+              </h1>
+              <span id="sourceResolution">摄像头未连接</span>
+            </div>
+            <div class="stage" id="stage">
+              <video id="video" playsinline muted hidden></video
+              ><canvas
+                id="canvas"
+                aria-label="带检测框的实时画面"
+                hidden
+              ></canvas>
+              <div class="empty-state" id="emptyState">
+                <svg
+                  width="44"
+                  height="44"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  aria-hidden="true"
+                >
+                  <rect x="3" y="6" width="18" height="14" rx="3" />
+                  <path d="m8 6 2-3h4l2 3" />
+                  <circle cx="12" cy="13" r="4" />
+                </svg>
+                <h2>摄像头尚未开启</h2>
+                <p>开启后实时监测，发现移动自动截图</p>
+                <button id="emptyStart" class="primary">开启摄像头</button>
+              </div>
+              <div class="stage-label" id="stageLabel" hidden>
+                <i class="status-dot"></i><span id="stageStatus">正在监测</span>
+              </div>
+              <span class="stage-clock" id="stageClock" hidden></span>
+            </div>
+            <div class="viewer-bottom">
+              <span id="statusText" role="status" aria-live="polite"
+                >准备就绪</span
+              >
+              <div class="viewer-actions">
+                <button id="snapshot" class="icon-button" disabled>
+                  手动截图</button
+                ><button
+                  id="fullscreen"
+                  class="icon-button"
+                  aria-label="全屏查看"
+                >
+                  全屏
+                </button>
+              </div>
+            </div>
+            <div class="stats">
+              <div>
+                <span>检测帧率</span><strong id="fps">—</strong
+                ><small>FPS</small>
+              </div>
+              <div>
+                <span>识别目标</span><strong id="targetCount">0</strong
+                ><small>个</small>
+              </div>
+              <div>
+                <span>画面状态</span
+                ><strong id="motionState" class="word-stat">待监测</strong>
+              </div>
+              <div>
+                <span>已保存</span><strong id="savedCount">0</strong
+                ><small>张</small>
+              </div>
+            </div>
+          </section>
+          <section class="gallery-panel">
+            <div class="results-heading">
+              <h2>最近截图 <span id="galleryCount">00</span></h2>
+              <span class="muted">最近 8 张 · 点击下载</span>
+            </div>
+            <div id="gallery" class="gallery">
+              <div class="gallery-empty">暂无截图，保存后在此预览</div>
+            </div>
+          </section>
+          <details class="results-panel">
+            <summary>目标详情 <span id="listCount">00</span></summary>
+            <div class="results-content">
+              <div class="legend">实线：识别目标 · 橙色虚线：移动区域</div>
+              <div id="targetList" class="target-list">
+                <div class="list-empty">暂无识别目标</div>
+              </div>
+            </div>
+          </details>
+        </div>
+        <aside class="sidebar" aria-label="摄像头与截图设置">
+          <section class="control-panel camera-panel">
+            <h2>摄像头</h2>
+            <label class="field device-field"
+              ><span class="sr-only">视频设备</span
+              ><select id="cameraSelect">
+                <option value="">默认摄像头</option>
+              </select></label
+            >
+            <div class="action-row">
+              <button id="start" class="primary">开始监测</button
+              ><button id="stop" class="stop-button" disabled>停止</button>
+            </div>
+            <div id="loadProgress" class="load-progress" hidden>
+              <progress id="progress" max="100" value="0"></progress
+              ><span id="loadText">正在准备模型…</span>
+            </div>
+            <div class="engine-status">
+              <i id="engineDot" class="status-dot"></i
+              ><span id="engineStatus">YOLO26n · 等待启动</span>
+            </div>
+          </section>
+          <section class="control-panel capture-panel">
+            <div class="control-heading">
+              <h2>移动自动截图</h2>
+              <label class="toggle" title="开启或关闭自动截图"
+                ><input
+                  id="autoCapture"
+                  type="checkbox"
+                  aria-label="开启自动截图"
+                  checked /><span class="switch"></span
+              ></label>
+            </div>
+            <div class="capture-options">
+              <label class="field"
+                ><span>截图间隔</span
+                ><select id="captureInterval">
+                  <option value="1">每 1 秒</option>
+                  <option value="2">每 2 秒</option>
+                  <option value="3">每 3 秒</option>
+                  <option value="4">每 4 秒</option>
+                  <option value="5">每 5 秒</option>
+                </select></label
+              ><label class="field"
+                ><span>移动灵敏度</span
+                ><select id="sensitivity">
+                  <option value="high">高</option>
+                  <option value="medium">中</option>
+                  <option value="low">低</option>
+                </select></label
+              >
+            </div>
+            <div class="folder-card">
+              <span class="field-label">保存位置</span
+              ><strong id="folderName">尚未选择文件夹</strong
+              ><button id="chooseFolder" class="secondary">
+                选择保存文件夹
+              </button>
+            </div>
+            <div
+              id="captureStatus"
+              class="capture-status"
+              role="status"
+              aria-live="polite"
+            >
+              选择文件夹并授权后自动保存
+            </div>
+          </section>
+          <details class="control-panel advanced">
+            <summary>识别与显示设置 <span>＋</span></summary>
+            <div class="advanced-content">
+              <p class="help">
+                移动时截图，静止时暂停。请固定摄像头并保持页面在前台；光影变化也可能触发截图。
+              </p>
+              <label class="field"
+                ><span>运行方式</span
+                ><select id="backend">
+                  <option value="auto">自动 · 优先 GPU</option>
+                  <option value="wasm">兼容模式 · CPU</option>
+                </select></label
+              ><label class="field"
+                ><span>模型精度</span
+                ><select id="quality">
+                  <option value="320">速度优先 · 320 × 320</option>
+                  <option value="640">细节优先 · 640 × 640</option>
+                </select></label
+              ><label class="field"
+                ><span>目标类别</span
+                ><select id="category">
+                  <option value="all">全部类别 · 80 类</option>
+                  <option value="person">仅人员</option>
+                  <option value="traffic">人员与交通工具</option>
+                  <option value="animals">动物</option>
+                </select></label
+              >
+              <div class="field">
+                <label for="confidence"
+                  >置信度阈值 <output id="confidenceValue">35%</output></label
+                ><input
+                  id="confidence"
+                  type="range"
+                  min="15"
+                  max="85"
+                  value="35"
+                  step="5"
+                />
+              </div>
+              <label class="field"
+                ><span>检测频率上限</span
+                ><select id="speed">
+                  <option value="30">30 FPS</option>
+                  <option value="15" selected>15 FPS</option>
+                  <option value="5">5 FPS</option>
+                </select></label
+              ><label class="switch-row"
+                ><span>显示运动轨迹</span
+                ><input id="trails" type="checkbox" checked /><span
+                  class="switch"
+                ></span
+              ></label>
+              <p class="help">
+                类别与置信度只影响 AI 识别，不限制画面移动触发。<br />当前 AI
+                处理耗时：<span id="latency">—</span> ms
+              </p>
+            </div>
+          </details>
+          <div class="engine-footer" id="footerEngine">YOLO26n · 本地推理</div>
         </aside>
-      </div>
-      <section class="results-panel"><div class="results-heading"><div><h2>目标动态 <span id="listCount">00</span></h2><p>同一目标持续编号，轨迹随画面更新</p></div><span class="mini-label">LIVE OBJECTS</span></div><div id="targetList" class="target-list"><div class="list-empty">检测开始后，在这里查看目标类别、置信度与运动状态。</div></div></section>
-      <footer><span>MotionSnap Pro Max <span class="footer-separator">/</span> 轻量视觉，自由运行。</span><span id="footerEngine">YOLO26n · 320 × 320 · 浏览器本地推理</span></footer>
-    </main>
-  </div>
-  <script type="module" src="/src/main.js"></script>
-</body>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
 </html>
