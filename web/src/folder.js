@@ -1,52 +1,68 @@
-// Select the directory first, then explicitly request write permission.
-// Keep a returned handle even if write permission is not granted yet.
+﻿import { logEvent, errorDetail } from "./diagnostics.js";
+// Called synchronously from a click. No permission query precedes the picker.
 export async function selectCaptureDirectory(
   picker,
   existing,
   onSelected = () => {},
+  isCurrent = () => true,
 ) {
   let selected = existing;
   if (!selected) {
-    if (typeof picker !== "function") {
+    if (typeof picker !== "function")
       throw new DOMException(
-        "此浏览器不支持文件夹选择，请使用桌面版 Chrome 或 Edge。",
+        "需要支持目录写入的桌面版 Edge / Chrome 和 HTTPS。",
         "NotSupportedError",
       );
-    }
-    selected = await picker({
-      id: "motionsnap-capture-location",
-      mode: "read",
+    logEvent("directory-picker", "begin", {
+      mode: "readwrite",
+      secureContext: globalThis.isSecureContext,
+      userActivation: globalThis.navigator?.userActivation?.isActive,
+      topLevel: typeof window === "undefined" || window.top === window,
     });
+    try {
+      selected = await picker({
+        id: "motionsnap-save-directory-v2",
+        mode: "readwrite",
+      });
+      logEvent("directory-picker", "selected", { folderName: selected.name });
+    } catch (error) {
+      error.folderStage = "picker";
+      logEvent("directory-picker", "failed", errorDetail(error));
+      throw error;
+    }
+    if (!isCurrent()) return null;
     onSelected(selected);
   }
-  try { await authorizeCaptureDirectory(selected); }
-  catch (error) { error.folderStage = "write"; throw error; }
-  return selected;
+  if (!isCurrent()) return null;
+  // A readwrite picker must already grant write permission. Do not launch a
+  // second permission prompt after an arbitrary delay or lost user activation.
+  await authorizeCaptureDirectory(selected, Boolean(existing));
+  return isCurrent() ? selected : null;
 }
-export async function authorizeCaptureDirectory(selected) {
-  if (typeof selected.queryPermission !== "function") return;
-  let permission = await selected.queryPermission({ mode: "readwrite" });
-  if (
-    permission !== "granted" &&
-    typeof selected.requestPermission === "function"
-  ) {
-    permission = await selected.requestPermission({ mode: "readwrite" });
-  }
-  if (permission !== "granted") {
-    throw new DOMException(
-      "文件夹已选中，但尚未获得写入权限。请点击“授权保存”并允许编辑文件。",
-      "NotAllowedError",
-    );
+export async function authorizeCaptureDirectory(selected, request = true) {
+  try {
+    logEvent("directory-permission", "begin", { request });
+    const permission = request
+      ? await selected.requestPermission({ mode: "readwrite" })
+      : await selected.queryPermission({ mode: "readwrite" });
+    logEvent("directory-permission", "result", { permission });
+    if (permission !== "granted")
+      throw new DOMException("尚未获得写入权限。", "NotAllowedError");
+  } catch (error) {
+    error.folderStage = "permission";
+    logEvent("directory-permission", "failed", errorDetail(error));
+    throw error;
   }
 }
 export function folderErrorMessage(error) {
-  if (error.name === "AbortError" && error.folderStage === "write")
-    return "目录已选中，但浏览器未完成写入授权（AbortError）。请点击授权保存，允许编辑文件。";
   if (error.name === "AbortError")
-    return "浏览器未返回所选目录（AbortError）。可能是目录访问受限、授权未完成或选择窗口关闭，并不一定是你取消了操作。请尝试另一个普通子文件夹，或在独立的 Chrome 窗口重试。";
+    return "目录选择或授权未完成，摄像头未启动。你可以重新选择；若已确认目录仍出现此提示，可能是浏览器限制或权限未授予。详情已记录到控制台。";
   if (error.name === "SecurityError")
-    return "浏览器阻止了授权请求（SecurityError）。请点击“授权保存”重试；若仍失败，请在独立的 Chrome / Edge 窗口中直接打开本站。";
+    return "浏览器阻止了目录操作。请通过 HTTPS 直接打开本站，并点击按钮重新选择或授权；详情见控制台。";
   if (error.name === "NotAllowedError")
-    return "文件夹已选中，写入权限尚未获得。请点击“授权保存”并允许编辑文件。";
-  return `${error.name || "Error"}：${error.message || "保存文件夹不可用，请重新选择。"}`;
+    return "未获得写入权限或权限已被撤销。请点击“授权保存”或重新选择目录。";
+  if (error.name === "NotFoundError")
+    return "所选目录已不存在或无法访问，请重新选择保存目录。";
+  if (error.name === "NotSupportedError") return error.message;
+  return `目录操作失败（${error.name || "Error"}）：${error.message || "请重新选择目录。"}`;
 }

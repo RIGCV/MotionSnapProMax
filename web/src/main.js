@@ -3,6 +3,8 @@ import { CLASS_NAMES, COLORS, matchesCategory } from "./detection.js";
 import { MotionDetector } from "./motion.js";
 import { CaptureGate, captureName, saveBlob } from "./capture.js";
 import { selectCaptureDirectory, folderErrorMessage } from "./folder.js";
+import { logEvent, errorDetail, getDiagnostics } from "./diagnostics.js";
+window.motionSnapDiagnostics = getDiagnostics;
 const $ = (id) => document.getElementById(id),
   video = $("video"),
   canvas = $("canvas"),
@@ -32,6 +34,8 @@ let tracks = [],
   motion = { active: false, regions: [] },
   directory,
   directoryWritable = false,
+  directoryPrepared = false,
+  storageFailure = "",
   saved = 0;
 const gate = new CaptureGate(),
   previews = [];
@@ -48,9 +52,15 @@ function updateButtons() {
     "quality",
     "cameraSelect",
   ])
-    $(id).disabled = starting || running || choosingFolder;
+    $(id).disabled = starting || running || choosingFolder || gate.busy;
   $("chooseFolder").disabled =
-    starting || choosingFolder || !window.showDirectoryPicker;
+    starting ||
+    running ||
+    choosingFolder ||
+    gate.busy ||
+    !window.showDirectoryPicker;
+  $("authorizeFolder").disabled = starting || choosingFolder || gate.busy;
+  $("snapshot").disabled = !running || gate.busy || !directoryWritable;
   $("stop").disabled = !starting && !running;
   $("sessionBadge").textContent = running
     ? "● 摄像头运行中"
@@ -137,16 +147,22 @@ function captureMessage(message, error = false) {
   $("captureStatus").classList.toggle("error", error);
 }
 function refreshCaptureStatus() {
+  if (storageFailure) {
+    captureMessage(storageFailure, true);
+    return;
+  }
   captureMessage(
-    !$("autoCapture").checked
-      ? "自动截图已关闭"
-      : !directory
-        ? "开启摄像头前请选择截图保存文件夹"
-        : !directoryWritable
-          ? "目录已选中，请点击授权保存"
-          : !running
-            ? "文件夹已就绪 · 开启摄像头后自动保存"
-            : "移动即保存 · 无间隔",
+    !directory
+      ? "未选择目录 · 开启摄像头前请选择保存文件夹"
+      : !directoryWritable
+        ? "未获得写入权限 · 请点击授权保存"
+        : gate.busy
+          ? "正在保存图片，请等待写入完成"
+          : !$("autoCapture").checked
+            ? "已获得写入权限 · 自动截图已关闭"
+            : running
+              ? "已获得写入权限 · 移动即保存"
+              : "已获得写入权限 · 等待启动监测",
   );
 }
 async function snapshotBlob() {
@@ -192,27 +208,78 @@ function addPreview(blob, name) {
   $("galleryCount").textContent = String(saved).padStart(2, "0");
   $("savedCount").textContent = saved;
 }
-async function autoSave() {
+async function captureFrame(kind = "auto") {
+  if (gate.busy) return false;
   const currentToken = token,
-    folder = directory,
-    name = captureName();
-  const blob = await snapshotBlob();
-  if (
-    currentToken !== token ||
-    !running ||
-    document.hidden ||
-    !$("autoCapture").checked ||
-    directory !== folder ||
-    !directoryWritable
-  )
+    folder = directory;
+  try {
+    return await gate.attempt(
+      {
+        active: kind === "manual" || motion.active,
+        enabled:
+          running &&
+          !document.hidden &&
+          !!folder &&
+          directoryWritable &&
+          (kind === "manual" || $("autoCapture").checked),
+      },
+      async () => {
+        updateButtons();
+        const name = captureName(new Date(), kind);
+        logEvent("png-encode", "begin", { filename: name }, true);
+        const blob = await snapshotBlob();
+        logEvent(
+          "png-encode",
+          "complete",
+          { filename: name, bytes: blob.size },
+          true,
+        );
+        if (
+          currentToken !== token ||
+          !running ||
+          document.hidden ||
+          directory !== folder ||
+          !directoryWritable ||
+          (kind === "auto" && !$("autoCapture").checked)
+        ) {
+          logEvent(
+            "file-save",
+            "skipped-stale-frame",
+            { filename: name },
+            true,
+          );
+          return false;
+        }
+        // Completion means write AND close succeeded. Stop permits this single
+        // in-flight write to finish, but releases the camera immediately.
+        await saveBlob(folder, name, blob);
+        saved++;
+        addPreview(blob, name);
+        captureMessage(
+          `${running ? "已获得写入权限" : "监测已停止，最后一张写入完成"} · 已保存 ${saved} 张`,
+        );
+        return true;
+      },
+    );
+  } catch (error) {
+    logEvent("capture", "failed", errorDetail(error));
+    if (directory === folder) {
+      directoryWritable = false;
+      $("autoCapture").checked = false;
+      $("authorizeFolder").hidden = false;
+      const advice =
+        error.name === "NotFoundError"
+          ? "目录已不可访问，请停止后重新选择。"
+          : ["NotAllowedError", "SecurityError"].includes(error.name)
+            ? "权限可能失效，请点击授权保存。"
+            : "请检查目录或磁盘，恢复后点击授权保存重试。";
+      storageFailure = `保存失败（${error.name || "Error"}）· 自动保存已暂停。${advice}`;
+      captureMessage(storageFailure, true);
+    }
     return false;
-  await saveBlob(folder, name, blob);
-  saved++;
-  addPreview(blob, name);
-  captureMessage(
-    `已保存 ${saved} 张 · 最近 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`,
-  );
-  return true;
+  } finally {
+    updateButtons();
+  }
 }
 function renderLive(now) {
   if (!running) return;
@@ -230,22 +297,7 @@ function renderLive(now) {
       $("stageStatus").textContent = motion.active
         ? "发现画面移动"
         : "正在监测";
-      gate
-        .attempt(
-          {
-            active: motion.active,
-            enabled:
-              !!directory && directoryWritable && $("autoCapture").checked,
-          },
-          autoSave,
-        )
-        .catch((error) => {
-          $("autoCapture").checked = false;
-          captureMessage(
-            `保存失败：${error.message}。请重新选择文件夹后开启自动截图。`,
-            true,
-          );
-        });
+      void captureFrame("auto");
     }
     draw();
     $("stageClock").textContent = new Date().toLocaleTimeString("zh-CN", {
@@ -278,6 +330,8 @@ function handleResult(data) {
 function stop({ keepStatus = false } = {}) {
   const wasBusy = busy;
   token++;
+  directoryPrepared = false;
+  logEvent("camera", "stop", { writeInFlight: gate.busy });
   running = false;
   starting = false;
   busy = false;
@@ -311,6 +365,8 @@ function stop({ keepStatus = false } = {}) {
   renderResults();
   updateButtons();
   refreshCaptureStatus();
+  if (gate.busy && !storageFailure)
+    captureMessage("监测已停止，正在完成最后一张写入…");
   if (!keepStatus) status("监测已停止 · 摄像头已释放");
 }
 function fail(error) {
@@ -339,7 +395,8 @@ async function enumerateCameras() {
     $("cameraSelect").value = current;
 }
 async function start() {
-  if (starting || running || choosingFolder) return;
+  if (starting || running || choosingFolder || gate.busy) return;
+  const reuseSelected = directoryPrepared;
   stop({ keepStatus: true });
   const thisToken = token;
   starting = true;
@@ -353,9 +410,9 @@ async function start() {
   try {
     if (!isSecureContext || !navigator.mediaDevices?.getUserMedia)
       throw new Error("请使用 HTTPS 和新版 Chrome / Edge 打开网页。");
-    if ($("autoCapture").checked || directory) {
+    {
       try {
-        if (!(await prepareDirectory(thisToken))) return;
+        if (!(await prepareDirectory(thisToken, !reuseSelected))) return;
       } catch (error) {
         if (thisToken === token) {
           stop({ keepStatus: true });
@@ -367,7 +424,9 @@ async function start() {
       }
       if (thisToken !== token) return;
     }
+    directoryPrepared = false;
     status("正在打开摄像头…");
+    logEvent("camera", "request", { session: thisToken });
     const deviceId = $("cameraSelect").value;
     const acquired = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -382,6 +441,7 @@ async function start() {
       acquired.getTracks().forEach((t) => t.stop());
       return;
     }
+    logEvent("camera", "acquired", { session: thisToken });
     stream = acquired;
     video.srcObject = stream;
     await video.play();
@@ -411,6 +471,7 @@ async function start() {
     worker.postMessage({ type: "reset" });
     starting = false;
     running = true;
+    logEvent("monitoring", "started", { session: thisToken });
     updateButtons();
     $("snapshot").disabled = false;
     $("stageLabel").hidden = false;
@@ -420,6 +481,7 @@ async function start() {
     renderTimer = requestAnimationFrame(renderLive);
     submitFrame();
   } catch (error) {
+    logEvent("camera-start", "failed", errorDetail(error));
     if (thisToken === token) fail(error);
   }
 }
@@ -463,6 +525,7 @@ $("emptyStart").onclick = start;
 $("stop").onclick = () => stop();
 let choosingFolder = false;
 async function prepareDirectory(expectedToken = token, forcePick = false) {
+  if (choosingFolder) return false;
   choosingFolder = true;
   updateButtons();
   try {
@@ -473,20 +536,28 @@ async function prepareDirectory(expectedToken = token, forcePick = false) {
         if (expectedToken !== token) return;
         directory = selected;
         directoryWritable = false;
+        storageFailure = "";
         $("folderName").textContent = selected.name;
         $("authorizeFolder").hidden = false;
         captureMessage("目录已选中，正在请求写入权限…");
       },
+      () => expectedToken === token,
     );
-    if (expectedToken !== token) return false;
+    if (expectedToken !== token || !selected) return false;
     directory = selected;
     directoryWritable = true;
+    directoryPrepared = true;
+    storageFailure = "";
     $("authorizeFolder").hidden = true;
     $("folderName").textContent = selected.name;
     refreshCaptureStatus();
     return true;
   } catch (error) {
-    if (error.folderStage === "write" && directory) {
+    if (
+      expectedToken === token &&
+      error.folderStage === "permission" &&
+      directory
+    ) {
       directoryWritable = false;
       $("authorizeFolder").hidden = false;
     }
@@ -497,7 +568,7 @@ async function prepareDirectory(expectedToken = token, forcePick = false) {
   }
 }
 $("chooseFolder").onclick = async () => {
-  if (choosingFolder || starting) return;
+  if (choosingFolder || starting || running || gate.busy) return;
   try {
     await prepareDirectory(token, true);
   } catch (error) {
@@ -505,7 +576,7 @@ $("chooseFolder").onclick = async () => {
   }
 };
 $("authorizeFolder").onclick = async () => {
-  if (choosingFolder || starting) return;
+  if (choosingFolder || starting || gate.busy) return;
   try {
     await prepareDirectory();
   } catch (error) {
@@ -515,14 +586,14 @@ $("authorizeFolder").onclick = async () => {
 if (!("showDirectoryPicker" in window)) {
   $("chooseFolder").disabled = true;
   captureMessage(
-    "自动保存文件夹需要桌面版 Chrome / Edge。此浏览器可使用手动截图。",
+    "未选择目录 · 自动保存需要桌面版 Chrome / Edge，请在支持目录写入的浏览器打开。",
   );
 }
 $("autoCapture").onchange = () => {
-  if ($("autoCapture").checked && !window.showDirectoryPicker) {
+  if ($("autoCapture").checked && !directoryWritable) {
     $("autoCapture").checked = false;
     captureMessage(
-      "此浏览器不支持自动写入文件夹，请使用桌面版 Chrome 或 Edge。",
+      storageFailure || "未获得写入权限，请先选择目录或点击授权保存。",
       true,
     );
   } else refreshCaptureStatus();
@@ -532,29 +603,7 @@ $("confidence").oninput = () => {
   $("confidenceValue").textContent = $("confidence").value + "%";
 };
 $("category").onchange = renderResults;
-$("snapshot").onclick = async () => {
-  try {
-    const blob = await snapshotBlob(),
-      name = captureName(new Date(), "manual");
-    if (directory) {
-      if (!directoryWritable)
-        throw new Error("请先点击授权保存，允许写入所选文件夹。");
-      await saveBlob(directory, name, blob);
-      saved++;
-      addPreview(blob, name);
-      captureMessage(`手动截图已保存 · 共 ${saved} 张`);
-    } else {
-      const url = URL.createObjectURL(blob),
-        a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 30000);
-    }
-  } catch (error) {
-    captureMessage(`保存失败：${error.message}`, true);
-  }
-};
+$("snapshot").onclick = () => captureFrame("manual");
 $("fullscreen").onclick = async () => {
   try {
     if (document.fullscreenElement) await document.exitFullscreen();

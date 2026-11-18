@@ -111,92 +111,124 @@ test("file save commits through close and aborts after write error", async () =>
 });
 
 import { selectCaptureDirectory, folderErrorMessage } from "../src/folder.js";
-test("selection is immediate, directory is retained before separate write authorization", async () => {
+import { captureName } from "../src/capture.js";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+test("native readwrite picker is immediate, followed by query only; no second prompt", async () => {
   const events = [];
   const selected = {
-    queryPermission: async (options) => {
-      assert.equal(options.mode, "readwrite");
+    name: "test",
+    queryPermission: async () => {
       events.push("query");
-      return "prompt";
-    },
-    requestPermission: async (options) => {
-      assert.equal(options.mode, "readwrite");
-      events.push("request");
       return "granted";
     },
+    requestPermission: () => assert.fail("No second prompt"),
   };
   const pending = selectCaptureDirectory(
     (options) => {
       events.push("picker");
-      assert.equal(options.mode, "read");
+      assert.equal(options.mode, "readwrite");
       return Promise.resolve(selected);
     },
     undefined,
-    (handle) => {
-      assert.equal(handle, selected);
-      events.push("selected");
-    },
+    () => events.push("selected"),
   );
   assert.deepEqual(events, ["picker"]);
   assert.equal(await pending, selected);
-  assert.deepEqual(events, ["picker", "selected", "query", "request"]);
+  assert.deepEqual(events, ["picker", "selected", "query"]);
 });
-test("already selected and authorized directory is reused without another picker or permission prompt", async () => {
+test("ungranted permission after picker requires a new explicit click; stale selection never requests permission", async () => {
   const selected = {
-    queryPermission: async () => "granted",
-    requestPermission: () => assert.fail("Already granted"),
-  };
-  assert.equal(
-    await selectCaptureDirectory(
-      () => assert.fail("Do not reopen picker"),
-      selected,
-    ),
-    selected,
-  );
-});
-test("denied write permission retains selection and retry can authorize without choosing again", async () => {
-  let retained,
-    allowed = false;
-  const selected = {
+    name: "test",
     queryPermission: async () => "prompt",
-    requestPermission: async () => (allowed ? "granted" : "denied"),
+    requestPermission: () => assert.fail("No implicit request"),
   };
   await assert.rejects(
-    selectCaptureDirectory(
-      async () => selected,
-      undefined,
-      (h) => (retained = h),
-    ),
+    selectCaptureDirectory(async () => selected),
     { name: "NotAllowedError" },
   );
-  assert.equal(retained, selected);
-  allowed = true;
   assert.equal(
-    await selectCaptureDirectory(() => assert.fail(), retained),
-    selected,
+    await selectCaptureDirectory(
+      async () => selected,
+      undefined,
+      () => assert.fail(),
+      () => false,
+    ),
+    null,
   );
 });
-test("AbortError does not accuse user of cancelling and has no automatic retry loop", async () => {
-  let count = 0;
-  await assert.rejects(
-    selectCaptureDirectory(async () => {
-      count++;
-      throw new DOMException("Rejected", "AbortError");
-    }),
-    { name: "AbortError" },
-  );
-  assert.equal(count, 1);
-  const message = folderErrorMessage({ name: "AbortError" });
-  assert.ok(message.includes("目录访问受限"));
-  assert.ok(!message.startsWith("已取消"));
+test("reauthorization requests immediately from the new click and reports denied permission", async () => {
+  let requested = false;
+  const selected = {
+    requestPermission: () => {
+      requested = true;
+      return Promise.resolve("denied");
+    },
+    queryPermission: () => assert.fail("No delay before request"),
+  };
+  const pending = selectCaptureDirectory(undefined, selected);
+  assert.equal(requested, true);
+  await assert.rejects(pending, { name: "NotAllowedError" });
 });
-test("unsupported browser fails clearly; no fallback directory or implicit creation", async () => {
+test("folder errors remain stage-specific without claiming that AbortError always means cancellation", async () => {
+  for (const name of [
+    "AbortError",
+    "SecurityError",
+    "NotAllowedError",
+    "NotFoundError",
+  ]) {
+    const error = new DOMException("Native diagnostic", name);
+    await assert.rejects(
+      selectCaptureDirectory(async () => {
+        throw error;
+      }),
+      (e) => e === error && e.folderStage === "picker",
+    );
+    assert.ok(folderErrorMessage(error).length > 10);
+  }
+  assert.ok(!folderErrorMessage({ name: "AbortError" }).startsWith("已取消"));
   await assert.rejects(selectCaptureDirectory(undefined), {
     name: "NotSupportedError",
   });
-  const selected = {
+});
+test("actual filesystem adapter writes a known PNG unchanged; identical millisecond names remain unique", async () => {
+  const root = await mkdtemp(join(tmpdir(), "motionsnap-write-test-"));
+  // Adapter verifies write/close contract on disk; it does NOT test browser permission.
+  const directory = {
     queryPermission: async () => "granted",
-    getDirectoryHandle: () => assert.fail("Must not create a directory"),
+    getFileHandle: async (name, options) => {
+      assert.equal(options.create, true);
+      return {
+        createWritable: async () => {
+          let bytes;
+          return {
+            write: async (blob) => {
+              bytes = Buffer.from(await blob.arrayBuffer());
+            },
+            close: async () =>
+              writeFile(join(root, name), bytes, { flag: "wx" }),
+            abort: async () => {},
+          };
+        },
+      };
+    },
   };
-  assert.equal(await selectCaptureDirectory(async () => selected), selected);
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS1kAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const names = new Set(),
+    date = new Date(2026, 10, 18, 12, 0, 0, 123);
+  try {
+    for (let i = 0; i < 20; i++) {
+      const name = captureName(date);
+      assert.ok(!names.has(name));
+      names.add(name);
+      await saveBlob(directory, name, new Blob([png], { type: "image/png" }));
+      assert.deepEqual(await readFile(join(root, name)), png);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
