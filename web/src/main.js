@@ -27,6 +27,33 @@ let worker,
   timer,
   renderTimer,
   busy = false;
+let cameraWatchdog, cameraPhase = "idle", cameraProgressAt = 0, cameraVideoTime = -1;
+function watchCamera(phase) {
+  clearTimeout(cameraWatchdog);
+  cameraPhase = phase;
+  cameraProgressAt = performance.now();
+  cameraVideoTime = video.currentTime;
+  cameraWatchdog = setTimeout(checkCameraHealth, 1000);
+}
+function checkCameraHealth(now = performance.now()) {
+  clearTimeout(cameraWatchdog);
+  if (cameraPhase === "idle") return;
+  if (cameraPhase === "running" && video.readyState >= 2 &&
+      video.currentTime !== cameraVideoTime) {
+    cameraVideoTime = video.currentTime;
+    cameraProgressAt = now;
+  }
+  const limit = cameraPhase === "loading" ? 60000 : cameraPhase === "opening" ? 20000 : 10000;
+  if (now - cameraProgressAt >= limit) {
+    const phase = cameraPhase;
+    logEvent("camera-watchdog", "timeout", { phase });
+    fail(new Error(phase === "loading"
+      ? "模型加载超时，已释放摄像头，请重试。"
+      : "摄像头未能持续提供画面，已停止监测并释放已取得的视频流。请检查其他应用占用及系统相机；尚未结束的浏览器请求返回后也会释放。"));
+    return;
+  }
+  cameraWatchdog = setTimeout(checkCameraHealth, 1000);
+}
 let tracks = [],
   lastResultAt = 0,
   actualFPS = 0,
@@ -344,6 +371,8 @@ function releaseCamera() {
   video.pause();
 }
 function stop({ keepStatus = false, dispose = false } = {}) {
+  clearTimeout(cameraWatchdog);
+  cameraPhase = "idle";
   const wasBusy = busy;
   token++;
   directoryPrepared = false;
@@ -438,6 +467,7 @@ async function openBuiltInCamera(session) {
 }
 async function start() {
   if (starting || running || choosingFolder || gate.busy || cameraPending) return;
+  if (document.hidden) return;
   const reuseSelected = directoryPrepared;
   stop({ keepStatus: true });
   const thisToken = token;
@@ -469,6 +499,7 @@ async function start() {
     directoryPrepared = false;
     status("正在打开摄像头…");
     logEvent("camera", "request", { session: thisToken });
+    watchCamera("opening");
     cameraPending = true;
     let acquired;
     try {
@@ -485,11 +516,14 @@ async function start() {
     logEvent("camera", "acquired", { session: thisToken });
     stream = acquired;
     video.srcObject = stream;
-    await video.play();
-    if (thisToken !== token) return;
     stream.getVideoTracks()[0].addEventListener("ended", () => {
       if (thisToken === token) fail(new Error("摄像头连接已中断"));
     });
+    watchCamera("playing");
+    await video.play();
+    if (thisToken !== token) return;
+    if (!video.videoWidth || !video.videoHeight || video.readyState < 2)
+      throw new Error("摄像头没有返回有效画面，已停止采集，请检查系统相机。");
     enumerateCameras().catch(() => {});
     const width = video.videoWidth,
       height = video.videoHeight,
@@ -507,11 +541,13 @@ async function start() {
     draw();
     $("sourceResolution").textContent = `${width} × ${height}`;
     status("正在加载本地检测模型…");
+    watchCamera("loading");
     await ensureModel();
     if (thisToken !== token) return;
     worker.postMessage({ type: "reset" });
     starting = false;
     running = true;
+    watchCamera("running");
     logEvent("monitoring", "started", { session: thisToken });
     updateButtons();
     $("snapshot").disabled = false;
@@ -663,13 +699,12 @@ $("fullscreen").onclick = async () => {
   }
 };
 document.addEventListener("visibilitychange", () => {
-  motionDetector?.reset();
-  motion = { active: false, regions: [] };
-  lastResultAt = 0;
-  if (running)
-    status(
-      document.hidden ? "页面已切换到后台，监测暂时暂停" : "已恢复前台监测",
-    );
+  if (document.hidden && (running || starting || stream || cameraPending)) {
+    stop({ dispose: true });
+    canvas.hidden = true;
+    $("emptyState").hidden = false;
+    status("页面已切到后台，已停止监测并释放摄像头。返回后请点击开始监测。");
+  }
 });
 // No asynchronous work or confirmation dialog in teardown. A late media
 // request is invalidated by token and its tracks are stopped when it resolves.

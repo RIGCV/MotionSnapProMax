@@ -14,7 +14,7 @@ def resource_path(relative_path):
         base_path = sys._MEIPASS
     else:
         # 开发模式下的当前目录
-        base_path = os.path.abspath(".")
+        base_path = os.path.dirname(os.path.abspath(__file__))
     
     full_path = os.path.join(base_path, relative_path)
     # 确保路径是绝对路径且处理中文
@@ -22,7 +22,7 @@ def resource_path(relative_path):
     return full_path
 
 # 全局变量，方便使用
-BASE_PATH = getattr(sys, '_MEIPASS', os.path.abspath("."))
+BASE_PATH = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 # ========== 单文件运行支持结束 ==========
 
 # 导入系统相关模块，用于系统级操作（如退出程序、平台判断）
@@ -107,8 +107,6 @@ QPushButton {
     color: #ffffff;
     min-width: 110px;
     max-width: 160px;
-    cursor: pointer;
-    transition: all 0.2s ease;  /* 平滑过渡，交互体验 */
 }
 
 /* 主操作按钮 - 开始检测（工业绿渐变）*/
@@ -117,12 +115,10 @@ QPushButton#btnStart {
 }
 QPushButton#btnStart:hover {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2ecc71, stop:1 #27ae60);
-    transform: translateY(-1px);  /* 轻微上浮，交互反馈 */
 }
 QPushButton#btnStart:disabled {
     background: #34495e;
     color: #7f8c8d;
-    transform: none;
 }
 /* 开始检测按钮-停止状态（工业红渐变）*/
 QPushButton#btnStart[state="stop"] {
@@ -138,7 +134,6 @@ QPushButton#btnSnap {
 }
 QPushButton#btnSnap:hover {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4aa3df, stop:1 #3498db);
-    transform: translateY(-1px);
 }
 
 /* 功能按钮 - 文件夹/退出（工业深灰）*/
@@ -148,7 +143,6 @@ QPushButton#btnFolder, QPushButton#btnExit {
 }
 QPushButton#btnFolder:hover, QPushButton#btnExit:hover {
     background-color: #4a6572;
-    transform: translateY(-1px);
 }
 
 /* 分组框 - 右侧面板容器，深灰底色，细边框，大圆角 */
@@ -204,7 +198,6 @@ QTextEdit {
     padding: 10px;
     font-size: 11px;
     font-family: "Consolas", monospace;
-    line-height: 1.5;
 }
 QTextEdit:focus {
     border-color: #3498db;  /* 聚焦边框，交互 */
@@ -519,15 +512,7 @@ class YOLODetector:
             np.random.seed(42)
             self.colors = np.random.randint(0, 255, size=(len(self.classes), 3), dtype="uint8")
             
-            # 尝试启用CUDA加速（若系统支持），提升检测速度
-            try:
-                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-                print("CUDA加速已启用")
-            except:
-                # 不支持CUDA时，使用CPU推理，打印提示
-                print("使用CPU推理")
-            
+            # 默认使用可用的 CPU 后端，避免延迟到首次推理才发现 CUDA 不可用。
             # 模型加载成功，返回True
             return True
         except Exception as e:
@@ -652,7 +637,8 @@ class DetectionThread(QThread):
         super().__init__()  # 调用父类构造函数
         self.yolo_detector = yolo_detector  # 传入YOLO检测器实例
         self.frame_buffer = FrameBuffer(maxsize=1)  # 初始化帧缓冲区，容量1（只保留最新帧）
-        self.running = False  # 线程运行标志，用于控制线程循环
+        self.running = False
+        self.stop_event = threading.Event()
         self.process_every_n_frames = 2  # 每N帧处理一次，默认2帧（平衡模式）
         self.frame_counter = 0  # 帧计数器，用于实现跳帧处理
     
@@ -664,7 +650,7 @@ class DetectionThread(QThread):
         """线程核心运行方法 - QThread固定重写方法，启动线程后自动执行"""
         self.running = True  # 设置运行标志为True
         # 线程主循环
-        while self.running:
+        while not self.stop_event.is_set():
             # 从缓冲区获取帧，超时0.01秒，避免线程阻塞
             frame = self.frame_buffer.get(timeout=0.01)
             if frame is None:
@@ -678,10 +664,12 @@ class DetectionThread(QThread):
                     # 执行YOLO检测，只检测移动人物
                     detected_frame, persons = self.yolo_detector.detect_persons(frame, only_moving=True)
                     # 发送检测完成信号，将结果传递给主线程
-                    self.detection_ready.emit(detected_frame, persons)
+                    if not self.stop_event.is_set():
+                        self.detection_ready.emit(detected_frame, persons)
                 except Exception as e:
                     # 捕获检测异常，发送错误信号
                     self.error_occurred.emit(f"检测错误: {str(e)}")
+                    break
             else:
                 # 不处理的帧，直接发送原帧和空人物列表，保证画面实时性
                 self.detection_ready.emit(frame, [])
@@ -689,80 +677,69 @@ class DetectionThread(QThread):
     def stop(self):
         """停止线程，设置运行标志为False，等待线程退出（最多500毫秒）"""
         self.running = False
-        self.wait(500)
+        self.stop_event.set()
 
 class VideoCaptureThread(QThread):
     """视频采集线程 - 继承QThread，独立于主线程采集摄像头帧，避免界面卡顿"""
     # 定义自定义信号：采集到帧后发送（numpy数组格式的帧）
-    frame_ready = pyqtSignal(np.ndarray)
     # 定义自定义信号：采集出错时发送错误信息
     error_occurred = pyqtSignal(str)
     # 定义自定义信号：FPS更新时发送（当前采集帧率）
     fps_updated = pyqtSignal(float)
     
     def __init__(self, camera_id=0):
-        super().__init__()  # 调用父类构造函数
-        self.camera_id = camera_id  # 摄像头ID，默认0（电脑默认摄像头）
-        self.cap = None  # OpenCV视频捕获对象，run方法中初始化
-        self.running = False  # 线程运行标志
-        self.target_fps = 90  # 目标采集帧率
-        self.frame_interval = 1.0 / self.target_fps  # 帧间隔时间（秒），用于控制采集速度
-    
+        super().__init__()
+        self.camera_id = camera_id
+        self.cap = None
+        self.stop_event = threading.Event()
+        self.frame_buffer = FrameBuffer(maxsize=1)
+
     def run(self):
-        """线程核心运行方法 - 初始化摄像头并循环采集帧"""
-        # 初始化视频捕获：指定摄像头ID，使用CAP_DSHOW（Windows直接显示驱动，避免摄像头占用问题）
-        self.cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
-        
-        # 检查摄像头是否成功打开
-        if not self.cap.isOpened():
-            self.error_occurred.emit("无法打开摄像头")  # 发送错误信号
-            return
-            
-        # 设置摄像头参数：分辨率640x480，帧率30，缓冲区大小1（只保留最新帧，减少延迟）
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
-        self.cap.set(cv2.CAP_PROP_FPS, 90)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
-        self.running = True  # 设置运行标志为True
-        frame_count = 0  # 帧计数器，用于计算实际FPS
-        last_time = time.time()  # 上一次计算FPS的时间
-        
-        # 采集主循环
-        while self.running:
-            start_time = time.time()  # 记录当前帧采集开始时间
-            
-            # 读取一帧：ret为是否读取成功，frame为采集到的帧
-            ret, frame = self.cap.read()
-            if not ret:
-                continue  # 读取失败则跳过
-            
-            # 强制调整帧分辨率为640x480，保证统一尺寸
-            frame = cv2.resize(frame, (1920, 1080))
-            # 发送帧就绪信号，将帧传递给主线程/检测线程
-            self.frame_ready.emit(frame)
-            
-            frame_count += 1  # 帧计数器加1
-            current_time = time.time()  # 获取当前时间
-            # 每1秒计算一次实际采集帧率
-            if current_time - last_time >= 1.0:
-                fps = frame_count / (current_time - last_time)  # 计算FPS：帧数/时间差
-                self.fps_updated.emit(fps)  # 发送FPS更新信号
-                frame_count = 0  # 重置帧计数器
-                last_time = current_time  # 更新上一次计算时间
-            
-            # 控制采集速度：计算当前帧采集耗时，若小于帧间隔则延时
-            elapsed = time.time() - start_time
-            sleep_time = self.frame_interval - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-    
+        """设备的打开、读取、释放始终在同一线程执行。"""
+        try:
+            if self.stop_event.is_set():
+                return
+            backend = cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY
+            self.cap = cv2.VideoCapture(self.camera_id, backend)
+            if not self.cap.isOpened():
+                raise RuntimeError("无法打开摄像头，请检查相机权限及其他应用是否占用设备")
+            if self.stop_event.is_set():
+                return
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            failures = count = 0
+            last_time = time.monotonic()
+            while not self.stop_event.is_set():
+                started = time.monotonic()
+                ok, frame = self.cap.read()
+                if self.stop_event.is_set():
+                    break
+                if not ok or frame is None or frame.size == 0:
+                    failures += 1
+                    if failures >= 10:
+                        raise RuntimeError("摄像头连续读取失败，设备可能已断开或被占用；已停止采集")
+                    self.stop_event.wait(0.1)
+                    continue
+                failures = 0
+                self.frame_buffer.put(frame)
+                count += 1
+                now = time.monotonic()
+                if now - last_time >= 1:
+                    self.fps_updated.emit(count / (now - last_time))
+                    count, last_time = 0, now
+                self.stop_event.wait(max(0, 1 / 30 - (time.monotonic() - started)))
+        except Exception as error:
+            if not self.stop_event.is_set():
+                self.error_occurred.emit(str(error))
+        finally:
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+
     def stop(self):
-        """停止采集线程，释放摄像头资源"""
-        self.running = False  # 设置运行标志为False
-        self.wait(1000)  # 等待线程退出（最多1000毫秒）
-        if self.cap:
-            self.cap.release()  # 释放视频捕获对象，释放摄像头
+        # 不在 GUI 线程 release，也不强制终止驱动调用。
+        self.stop_event.set()
 
 class MainWindow(QMainWindow):
     """主窗口类 - 继承QMainWindow，程序核心界面，整合所有功能模块"""
@@ -815,12 +792,17 @@ class MainWindow(QMainWindow):
         self.showMaximized()
         
         # 启动摄像头预览（程序启动后直接打开摄像头）
-        self.start_camera_preview()
+        self.status_label.setText("摄像头未开启，点击开始检测")
         
         # 初始化UI更新定时器：每隔10毫秒更新一次界面（约30FPS，保证画面流畅）
         self.ui_timer = QTimer()
         self.ui_timer.timeout.connect(self.update_ui)  # 绑定定时器超时信号到更新方法
-        self.ui_timer.start(10)
+        self.ui_timer.start(33)
+        self._closing = False
+        self._stopping = False
+        self.last_error = None
+        self.shutdown_timer = QTimer(self)
+        self.shutdown_timer.timeout.connect(self.finish_stop)
         
         # 加载YOLO模型，初始化模型加载状态
         self.model_loaded = self.yolo_detector.load_model()
@@ -1060,6 +1042,7 @@ class MainWindow(QMainWindow):
         log_layout.setContentsMargins(8, 5, 8, 5)  # 减小内边距
         
         self.log_text = QTextEdit()  # 文本编辑框，用于显示日志
+        self.log_text.document().setMaximumBlockCount(500)
         self.log_text.setReadOnly(True)  # 设置为只读，防止用户编辑
         self.log_text.setMaximumHeight(120)  # 减小最大高度
         self.log_text.setMinimumHeight(120)  # 减小最小高度
@@ -1108,20 +1091,23 @@ class MainWindow(QMainWindow):
     def start_camera_preview(self):
         """启动摄像头预览，初始化并启动采集线程"""
         # 实例化视频采集线程，摄像头ID=0
+        if self.capture_thread is not None:
+            return
         self.capture_thread = VideoCaptureThread(camera_id=0)
         # 绑定采集线程的信号到对应的槽函数
-        self.capture_thread.frame_ready.connect(self.on_frame_ready)  # 帧就绪信号
         self.capture_thread.error_occurred.connect(self.on_camera_error)  # 错误信号
         self.capture_thread.fps_updated.connect(self.on_fps_updated)  # FPS更新信号
         self.capture_thread.start()  # 启动采集线程
         
         # 更新界面状态：设置状态标签文字和颜色，记录日志
-        self.status_label.setText("🎥 摄像头预览模式")
+        self.status_label.setText("摄像头正在启动…")
         self.status_label.setStyleSheet("color: #3498db;")  # 工业蓝
-        self.log_message("📹 摄像头已启动，进入预览模式")
+        self.log_message("正在请求摄像头，等待画面")
     
     def on_frame_ready(self, frame):
         """采集线程帧就绪信号的槽函数 - 接收采集到的帧，分发给检测线程（若检测中）"""
+        if not self.is_detecting or self._closing:
+            return
         self.current_frame = frame  # 更新当前帧
         # 若正在检测且检测线程已初始化，将帧添加到检测线程的帧缓冲区
         if self.is_detecting and self.detection_thread:
@@ -1151,13 +1137,19 @@ class MainWindow(QMainWindow):
             msg.exec_()
             return
         
-        self.is_detecting = True  # 设置检测状态为True
+        if self._stopping or self._closing or self.is_detecting:
+            return
+        self.last_error = None
+        self.yolo_detector.motion_detector = MotionDetector()
+        self.is_detecting = True
+        self.start_camera_preview()
         
         # 实例化检测线程，传入YOLO检测器实例
         self.detection_thread = DetectionThread(self.yolo_detector)
         # 绑定检测线程的信号到对应的槽函数
         self.detection_thread.detection_ready.connect(self.on_detection_result)  # 检测完成信号
         self.detection_thread.error_occurred.connect(self.on_detection_error)  # 错误信号
+        self.detection_thread.process_every_n_frames = [1, 2, 3][self.skip_combo.currentIndex()]
         self.detection_thread.start()  # 启动检测线程
         
         # ========== 优化：按钮状态更新 - 设置属性而非直接改样式，兼容QSS ==========
@@ -1180,11 +1172,19 @@ class MainWindow(QMainWindow):
         """停止目标检测，销毁检测线程"""
         self.is_detecting = False  # 设置检测状态为False
         
-        # 若检测线程已初始化，停止并销毁线程
-        if self.detection_thread:
-            self.detection_thread.stop()
-            self.detection_thread = None
-        
+        self._stopping = True
+        self.btn_start.setEnabled(False)
+        for worker in (self.capture_thread, self.detection_thread):
+            if worker is not None:
+                worker.stop()
+        self.current_frame = None
+        self.last_persons = []
+        self.current_fps = 0
+        self.video_label.clear()
+        self.video_label.setText("摄像头正在释放…")
+        self.video_overlay.setText("正在停止")
+        self.shutdown_timer.start(50)
+
         # ========== 优化：恢复按钮状态 - 清除属性，兼容QSS ==========
         self.btn_start.setText("🚀 开始检测")
         self.btn_start.setProperty("state", "")  # 清除状态属性
@@ -1197,12 +1197,28 @@ class MainWindow(QMainWindow):
         self.style().polish(self.video_label)
         
         # 更新状态标签
-        self.status_label.setText("🎥 摄像头预览模式")
+        self.status_label.setText("正在停止并释放摄像头…")
         self.status_label.setStyleSheet("color: #3498db;")  # 工业蓝
-        self.log_message("🛑 停止移动目标检测，回到预览模式")
+        self.log_message("正在停止检测与摄像头采集")
     
+    def finish_stop(self):
+        if any(w is not None and w.isRunning() for w in (self.capture_thread, self.detection_thread)):
+            return
+        self.shutdown_timer.stop()
+        self.capture_thread = self.detection_thread = None
+        self._stopping = False
+        self.status_label.setText(self.last_error or "已停止，摄像头已释放")
+        self.video_label.setText("摄像头已关闭")
+        self.video_overlay.setText("已停止")
+        self.btn_start.setEnabled(self.model_loaded and not self._closing)
+        self.log_message("摄像头与检测线程已退出")
+        if self._closing:
+            self.close()
+
     def on_detection_result(self, frame, persons):
         """检测线程检测完成信号的槽函数 - 接收检测结果，更新当前帧并执行自动截图"""
+        if not self.is_detecting or self.sender() is not self.detection_thread:
+            return
         self.current_frame = frame  # 更新当前帧为绘制了检测框的帧
         self.last_persons = persons  # 保存最新检测到的人物信息
         
@@ -1213,26 +1229,27 @@ class MainWindow(QMainWindow):
     def on_detection_error(self, msg):
         """检测线程错误信号的槽函数 - 记录检测错误日志"""
         self.log_message(f"⚠️ 检测模块错误: {msg}", "error")
+        self.last_error = msg
+        self.stop_detection()
     
     def on_camera_error(self, msg):
         """采集线程错误信号的槽函数 - 记录摄像头错误日志并弹出错误框（优化3：添加窗口图标）"""
         self.log_message(f"🔴 摄像头设备错误: {msg}", "error")
-        box = QMessageBox(self)
-        box.setWindowIcon(self.windowIcon())
-        box.setIcon(QMessageBox.Critical)
-        box.setWindowTitle("设备错误")
-        box.setText(f"摄像头启动失败: {msg}\n请检查设备连接")
-        box.setStandardButtons(QMessageBox.Ok)
-        box.exec_()
-    
+        self.last_error = msg
+        self.stop_detection()
+
     def update_ui(self):
         """UI更新定时器的槽函数 - 每隔33毫秒更新一次界面，保证画面流畅"""
+        if self.is_detecting and self.capture_thread is not None:
+            frame = self.capture_thread.frame_buffer.get()
+            if frame is not None:
+                self.on_frame_ready(frame)
         # 若当前无帧，直接返回
         if self.current_frame is None:
             return
         
         # OpenCV帧（BGR格式）转换为PyQt可显示的QPixmap（RGB格式）
-        rgb = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2GRAY) if len(self.current_frame.shape) == 2 else cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
+        rgb = self.current_frame if len(self.current_frame.shape) == 2 else cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape if len(rgb.shape) == 3 else (rgb.shape[0], rgb.shape[1], 1)
         bytes_per_line = w * ch
         qt_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888 if ch == 3 else QImage.Format_Grayscale8)
@@ -1265,7 +1282,7 @@ class MainWindow(QMainWindow):
             # 为帧添加时间水印，生成带水印的帧
             frame_marked = self.add_watermark(frame.copy())
             # 保存截图：JPEG质量95，平衡画质和文件大小
-            cv2.imwrite(filename, frame_marked, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            self.save_image(filename, frame_marked, 95)
             
             # 更新截图统计和时间戳
             self.screenshot_count += 1
@@ -1276,6 +1293,7 @@ class MainWindow(QMainWindow):
             self.log_message(f"📸 自动抓拍动态目标: {os.path.basename(filename)} (目标数: {len(persons)})")
         except Exception as e:
             # 捕获保存异常，记录错误日志
+            self.last_capture_time = current_time
             self.log_message(f"🔴 自动抓拍失败: {str(e)}", "error")
     
     def manual_capture(self):
@@ -1300,19 +1318,13 @@ class MainWindow(QMainWindow):
             
             # 添加水印并保存，质量98
             frame_marked = self.add_watermark(self.current_frame.copy())
-            cv2.imwrite(filename, frame_marked, [cv2.IMWRITE_JPEG_QUALITY, 98])
+            self.save_image(filename, frame_marked, 98)
             
             # 更新截图统计，更新预览，记录日志
             self.screenshot_count += 1
             self.update_preview(frame_marked)
             self.log_message(f"📸 手动抓拍成功: {os.path.basename(filename)}")
             
-            # 临时提示：修改状态标签，2秒后恢复原文字
-            old_text = self.status_label.text()
-            old_style = self.status_label.styleSheet()
-            self.status_label.setText("✅ 抓拍成功，已保存至指定路径")
-            self.status_label.setStyleSheet("color: #2ecc71;")
-            QTimer.singleShot(2000, lambda: [self.status_label.setText(old_text), self.status_label.setStyleSheet(old_style)])
         except Exception as e:
             # 捕获保存异常，弹出错误框（优化3：添加窗口图标）
             msg = QMessageBox(self)
@@ -1323,6 +1335,15 @@ class MainWindow(QMainWindow):
             msg.setStandardButtons(QMessageBox.Ok)
             msg.exec_()
     
+    @staticmethod
+    def save_image(filename, frame, quality):
+        # imwrite 在 Windows 中文路径可能静默失败；编码后通过 Python 写文件。
+        ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        if not ok:
+            raise OSError("JPEG 编码失败")
+        with open(filename, "xb") as output:
+            output.write(encoded.tobytes())
+
     def add_watermark(self, image_array):
         """为帧添加右下角时间水印 - 优化字体、位置、透明度，支持中文"""
         try:
@@ -1445,34 +1466,19 @@ class MainWindow(QMainWindow):
             msg.exec_()
     
     def closeEvent(self, event):
-        """重写窗口关闭事件 - 确认框，安全释放所有资源（优化3：弹窗添加图标）"""
-        # 若正在检测，弹出确认框
-        if self.is_detecting:
-            msg = QMessageBox(self)
-            msg.setWindowIcon(self.windowIcon())
-            msg.setIcon(QMessageBox.Question)
-            msg.setWindowTitle("系统退出确认")
-            msg.setText("当前正在执行目标检测，确定退出系统？")
-            msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-            msg.setDefaultButton(QMessageBox.No)
-            reply = msg.exec_()
-            if reply == QMessageBox.No:
-                event.ignore()
-                return
-        
-        # 资源释放：有序停止线程，释放设备
-        self.log_message("🔴 系统正在退出，释放硬件资源...")
-        if self.is_detecting:
+        self._closing = True
+        if self.capture_thread is not None or self.detection_thread is not None:
+            event.ignore()
             self.stop_detection()
-        if self.capture_thread:
-            self.capture_thread.stop()
-        self.ui_timer.stop()  # 停止UI定时器
-        
-        self.log_message("✅ 系统资源已全部释放，安全退出")
+            return
+        self.ui_timer.stop()
         event.accept()
+
 
 def main():
     """程序入口函数 - 初始化，适配工控机和高分屏"""
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)  # 初始化PyQt应用
     app.setStyle('Fusion')  # 跨平台统一样式，避免系统样式差异
     app.setApplicationName("VisionGuard")  # 应用名称

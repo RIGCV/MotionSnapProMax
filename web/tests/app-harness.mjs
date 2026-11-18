@@ -113,6 +113,7 @@ export async function appHarness() {
     play: async () => {
       events.push("play");
       if (state.playError) throw state.playError;
+      if (state.playWait) await state.playWait.promise;
     },
     pause: () => {},
     srcObject: null,
@@ -209,7 +210,7 @@ export async function appHarness() {
     .replaceAll("import.meta.env.BASE_URL", '"./"')
     .replaceAll("import.meta.url", '"https://test.invalid/src/main.js"');
   source +=
-    "\nglobalThis.appTest={start,stop,captureFrame,renderLive,setMotion:value=>{motion=value;},getState:()=>({running,starting,choosingFolder,directory,directoryWritable,saved,busy:gate.busy,storageFailure})};";
+    "\nglobalThis.appTest={start,stop,captureFrame,renderLive,checkCameraHealth,setHidden:value=>{document.hidden=value;},setMotion:value=>{motion=value;},getState:()=>({running,starting,choosingFolder,directory,directoryWritable,saved,busy:gate.busy,storageFailure})};";
   const context = vm.createContext({
     window,
     navigator,

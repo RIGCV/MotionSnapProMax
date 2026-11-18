@@ -4,6 +4,88 @@ import { appHarness, deferred, tick } from "./app-harness.mjs";
 import { selectBuiltInCamera } from "../src/camera.js";
 const physical = { kind: "videoinput", label: "Chicony USB2.0 Camera", deviceId: "chicony" };
 const virtual = { kind: "videoinput", label: "vivo Virtual Camera", deviceId: "vivo" };
+
+test("background page releases camera and does not automatically reopen", async () => {
+  const h = await appHarness();
+  await h.app.start();
+  h.app.setHidden(true);
+  h.documentEvents.get("visibilitychange")();
+  assert.equal(h.state.stopCount, 1);
+  assert.equal(h.app.getState().running, false);
+  h.app.setHidden(false);
+  h.documentEvents.get("visibilitychange")();
+  assert.equal(h.state.cameraCount, 1);
+});
+
+test("backgrounding pending permission releases late stream", async () => {
+  const h = await appHarness();
+  h.state.cameraWait = deferred();
+  const pending = h.app.start();
+  await tick();
+  h.app.setHidden(true);
+  h.documentEvents.get("visibilitychange")();
+  let stopped = 0;
+  h.state.cameraWait.resolve({ getTracks: () => [{ stop: () => stopped++ }] });
+  await pending;
+  assert.equal(stopped, 1);
+  assert.equal(h.app.getState().running, false);
+});
+
+test("video play hanging releases acquired camera on watchdog timeout", async () => {
+  const h = await appHarness();
+  h.state.playWait = deferred();
+  const pending = h.app.start();
+  await tick();
+  h.app.checkCameraHealth(performance.now() + 21000);
+  assert.equal(h.state.stopCount, 1);
+  assert.equal(h.app.getState().starting, false);
+  h.state.playWait.resolve();
+  await pending;
+  assert.equal(h.app.getState().running, false);
+});
+
+test("stalled running video is stopped and released", async () => {
+  const h = await appHarness();
+  await h.app.start();
+  h.app.checkCameraHealth(performance.now() + 11000);
+  assert.equal(h.state.stopCount, 1);
+  assert.equal(h.app.getState().running, false);
+  assert.match(h.nodes.get("statusText").textContent, /未能持续提供画面/);
+});
+
+test("zero-sized video never enters monitoring and releases stream", async () => {
+  const h = await appHarness();
+  h.nodes.get("video").videoWidth = 0;
+  await h.app.start();
+  assert.equal(h.state.stopCount, 1);
+  assert.equal(h.app.getState().running, false);
+});
+
+test("pending device timeout blocks duplicate requests and disposes late success", async () => {
+  const h = await appHarness();
+  h.state.cameraWait = deferred();
+  const pending = h.app.start();
+  await tick();
+  h.app.checkCameraHealth(performance.now() + 21000);
+  await h.app.start();
+  assert.equal(h.state.cameraCount, 1);
+  let stopped = 0;
+  h.state.cameraWait.resolve({ getTracks: () => [{ stop: () => stopped++ }] });
+  await pending;
+  assert.equal(stopped, 1);
+  assert.equal(h.app.getState().running, false);
+  assert.equal(h.nodes.get("start").disabled, false);
+});
+
+test("advancing video refreshes watchdog even when the image is dark", async () => {
+  const h = await appHarness();
+  await h.app.start();
+  h.nodes.get("video").currentTime++;
+  h.app.checkCameraHealth(performance.now() + 11000);
+  assert.equal(h.state.stopCount, 0);
+  assert.equal(h.app.getState().running, true);
+  h.app.stop();
+});
 test("vivo default is excluded and Chicony hardware is requested explicitly", async () => {
   const h = await appHarness();
   h.state.devices = [virtual, physical];
