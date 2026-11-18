@@ -5,6 +5,7 @@ import { CaptureGate, captureName, saveBlob } from "../src/capture.js";
 import { selectCaptureDirectory, folderErrorMessage } from "../src/folder.js";
 import { CLASS_NAMES, COLORS, matchesCategory } from "../src/detection.js";
 import { MotionDetector } from "../src/motion.js";
+import { selectBuiltInCamera } from "../src/camera.js";
 export const deferred = () => {
   let resolve, reject;
   const promise = new Promise((a, b) => {
@@ -48,6 +49,8 @@ export async function appHarness() {
     closeWait: null,
     writeError: null,
     pick: null,
+    devices: [{ kind: "videoinput", label: "Integrated Camera", deviceId: "builtin" }],
+    cameraConstraints: [],
   };
   class Element {
     constructor() {
@@ -163,8 +166,9 @@ export async function appHarness() {
   const navigator = {
     userActivation: { isActive: true },
     mediaDevices: {
-      enumerateDevices: async () => [],
-      getUserMedia: async () => {
+      enumerateDevices: async () => state.devices,
+      getUserMedia: async (constraints) => {
+        state.cameraConstraints.push(constraints);
         events.push("camera");
         state.cameraCount++;
         if (state.cameraWait) return state.cameraWait.promise;
@@ -252,6 +256,7 @@ export async function appHarness() {
     COLORS,
     matchesCategory,
     MotionDetector,
+    selectBuiltInCamera,
     logEvent() {},
     errorDetail: (e) => ({ name: e.name, message: e.message }),
     getDiagnostics: () => [],

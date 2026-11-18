@@ -4,6 +4,7 @@ import { MotionDetector } from "./motion.js";
 import { CaptureGate, captureName, saveBlob } from "./capture.js";
 import { selectCaptureDirectory, folderErrorMessage } from "./folder.js";
 import { logEvent, errorDetail, getDiagnostics } from "./diagnostics.js";
+import { selectBuiltInCamera } from "./camera.js";
 window.motionSnapDiagnostics = getDiagnostics;
 const $ = (id) => document.getElementById(id),
   video = $("video"),
@@ -393,18 +394,47 @@ function fail(error) {
 }
 async function enumerateCameras() {
   if (!navigator.mediaDevices?.enumerateDevices) return;
-  const devices = await navigator.mediaDevices.enumerateDevices(),
-    current = $("cameraSelect").value;
-  $("cameraSelect").replaceChildren(new Option("默认摄像头", ""));
-  devices
-    .filter((d) => d.kind === "videoinput")
-    .forEach((d, i) =>
-      $("cameraSelect").add(
-        new Option(d.label || `摄像头 ${i + 1}`, d.deviceId),
-      ),
-    );
-  if ([...$("cameraSelect").options].some((o) => o.value === current))
-    $("cameraSelect").value = current;
+  const device = selectBuiltInCamera(await navigator.mediaDevices.enumerateDevices());
+  $("cameraSelect").replaceChildren(new Option(device?.label || "电脑内置摄像头（自动识别）", device?.deviceId || ""));
+}
+async function openBuiltInCamera(session) {
+  const media = navigator.mediaDevices;
+  let devices = await media.enumerateDevices();
+  if (session !== token) return null;
+  let selected = selectBuiltInCamera(devices);
+  const constraints = (device) => ({ audio: false, video: {
+    width: { ideal: 1280 }, height: { ideal: 720 },
+    ...(device ? { deviceId: { exact: device.deviceId } } : { facingMode: "user" }),
+  } });
+  const acquire = async (device) => {
+    const acquired = await media.getUserMedia(constraints(device));
+    if (session !== token) {
+      acquired.getTracks().forEach(track => track.stop());
+      return null;
+    }
+    // Own the stream immediately so exit also releases a permission probe.
+    stream = acquired;
+    return acquired;
+  };
+  if (!selected && !devices.some(d => d.kind === "videoinput" && d.label)) {
+    // First permission can be required before device names become available.
+    // This temporary stream is never rendered or passed to inference.
+    if (!(await acquire())) return null;
+    devices = await media.enumerateDevices();
+    if (session !== token) return null;
+    selected = selectBuiltInCamera(devices);
+  }
+  if (!selected) {
+    throw new Error("未能识别电脑内置摄像头，请检查系统是否启用该设备。本程序不会改用手机或虚拟摄像头。");
+  }
+  const currentId = stream?.getVideoTracks()[0]?.getSettings?.().deviceId;
+  if (currentId !== selected.deviceId) {
+    releaseCamera();
+    if (!(await acquire(selected))) return null;
+  }
+  $("cameraSelect").replaceChildren(new Option(selected.label, selected.deviceId));
+  logEvent("camera", "selected-built-in", { label: selected.label });
+  return stream;
 }
 async function start() {
   if (starting || running || choosingFolder || gate.busy || cameraPending) return;
@@ -439,23 +469,15 @@ async function start() {
     directoryPrepared = false;
     status("正在打开摄像头…");
     logEvent("camera", "request", { session: thisToken });
-    const deviceId = $("cameraSelect").value;
     cameraPending = true;
     let acquired;
     try {
-      acquired = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        facingMode: "environment",
-        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-      },
-      });
+      acquired = await openBuiltInCamera(thisToken);
     } finally {
       cameraPending = false;
       updateButtons();
     }
+    if (!acquired) return;
     if (thisToken !== token) {
       acquired.getTracks().forEach((t) => t.stop());
       return;
