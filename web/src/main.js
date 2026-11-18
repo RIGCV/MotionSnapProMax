@@ -2,7 +2,7 @@ import "./styles.css";
 import { CLASS_NAMES, COLORS, matchesCategory } from "./detection.js";
 import { MotionDetector } from "./motion.js";
 import { CaptureGate, captureName, saveBlob } from "./capture.js";
-import { screenshotsDirectory, loadParent, rememberParent } from "./folder.js";
+import { selectCaptureDirectory, folderErrorMessage } from "./folder.js";
 const $ = (id) => document.getElementById(id),
   video = $("video"),
   canvas = $("canvas"),
@@ -47,7 +47,9 @@ function updateButtons() {
     "quality",
     "cameraSelect",
   ])
-    $(id).disabled = starting || running;
+    $(id).disabled = starting || running || choosingFolder;
+  $("chooseFolder").disabled =
+    starting || choosingFolder || !window.showDirectoryPicker;
   $("stop").disabled = !starting && !running;
   $("sessionBadge").textContent = running
     ? "● 摄像头运行中"
@@ -138,7 +140,7 @@ function refreshCaptureStatus() {
     !$("autoCapture").checked
       ? "自动截图已关闭"
       : !directory
-        ? "首次启动请选择桌面，自动创建 Screenshots"
+        ? "开启摄像头前请选择截图保存文件夹"
         : !running
           ? "文件夹已就绪 · 开启摄像头后自动保存"
           : "移动即保存 · 无间隔",
@@ -332,7 +334,7 @@ async function enumerateCameras() {
     $("cameraSelect").value = current;
 }
 async function start() {
-  if (starting || running) return;
+  if (starting || running || choosingFolder) return;
   stop({ keepStatus: true });
   const thisToken = token;
   starting = true;
@@ -342,27 +344,25 @@ async function start() {
   lastMotionVideoTime = -1;
 
   updateButtons();
-  status("正在打开摄像头…");
+  status("请选择截图保存文件夹，确认后开启摄像头…");
   try {
     if (!isSecureContext || !navigator.mediaDevices?.getUserMedia)
       throw new Error("请使用 HTTPS 和新版 Chrome / Edge 打开网页。");
-    if (window.showDirectoryPicker) {
+    if (window.showDirectoryPicker || $("autoCapture").checked) {
       try {
-        await prepareDirectory();
+        if (!(await prepareDirectory(thisToken))) return;
       } catch (error) {
         if (thisToken === token) {
           stop({ keepStatus: true });
-          captureMessage(
-            error.name === "AbortError"
-              ? "已取消目录授权。请点击开始监测并选择桌面。"
-              : error.message,
-            true,
-          );
+          const message = folderErrorMessage(error);
+          status(message, error.name !== "AbortError");
+          captureMessage(message, error.name !== "AbortError");
         }
         return;
       }
       if (thisToken !== token) return;
     }
+    status("正在打开摄像头…");
     const deviceId = $("cameraSelect").value;
     const acquired = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -456,37 +456,35 @@ async function submitFrame() {
 $("start").onclick = start;
 $("emptyStart").onclick = start;
 $("stop").onclick = () => stop();
-let parentHandle;
-const restoredParent = loadParent()
-  .then((handle) => {
-    if (!parentHandle) parentHandle = handle;
-  })
-  .catch(() => {});
-async function prepareDirectory(forcePick = false) {
-  if (!window.showDirectoryPicker) return false;
-  if (forcePick || !parentHandle) {
-    parentHandle = await window.showDirectoryPicker({
-      id: "motionsnap-desktop",
-      mode: "readwrite",
-      startIn: "desktop",
-    });
-  } else {
-    let permission = await parentHandle.queryPermission({ mode: "readwrite" });
-    if (permission !== "granted")
-      permission = await parentHandle.requestPermission({ mode: "readwrite" });
-    if (permission !== "granted") throw new Error("请授权所选目录后重试。");
+let choosingFolder = false;
+async function prepareDirectory(expectedToken = token) {
+  choosingFolder = true;
+  updateButtons();
+  try {
+    const selected = await selectCaptureDirectory(
+      window.showDirectoryPicker?.bind(window),
+    );
+    if (expectedToken !== token) return false;
+    directory = selected;
+    $("folderName").textContent = selected.name;
+    refreshCaptureStatus();
+    return true;
+  } finally {
+    choosingFolder = false;
+    updateButtons();
   }
-  directory = await screenshotsDirectory(parentHandle);
-  $("folderName").textContent = parentHandle.name + " / Screenshots";
-  rememberParent(parentHandle).catch(() => {});
-  refreshCaptureStatus();
-  return true;
 }
 $("chooseFolder").onclick = async () => {
+  if (choosingFolder || starting) return;
   try {
-    await prepareDirectory(true);
+    await prepareDirectory();
   } catch (error) {
-    if (error.name !== "AbortError") captureMessage(error.message, true);
+    captureMessage(
+      error.name === "AbortError"
+        ? "已取消更换，保留原保存文件夹。"
+        : folderErrorMessage(error),
+      error.name !== "AbortError",
+    );
   }
 };
 if (!("showDirectoryPicker" in window)) {
@@ -495,7 +493,15 @@ if (!("showDirectoryPicker" in window)) {
     "自动保存文件夹需要桌面版 Chrome / Edge。此浏览器可使用手动截图。",
   );
 }
-for (const id of ["autoCapture"]) $(id).onchange = refreshCaptureStatus;
+$("autoCapture").onchange = () => {
+  if ($("autoCapture").checked && !window.showDirectoryPicker) {
+    $("autoCapture").checked = false;
+    captureMessage(
+      "此浏览器不支持自动写入文件夹，请使用桌面版 Chrome 或 Edge。",
+      true,
+    );
+  } else refreshCaptureStatus();
+};
 $("sensitivity").onchange = () => motionDetector?.reset();
 $("confidence").oninput = () => {
   $("confidenceValue").textContent = $("confidence").value + "%";

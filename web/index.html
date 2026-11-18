@@ -61,7 +61,7 @@
           </div>
           <div class="viewer-bottom">
             <span id="statusText" role="status"
-              >准备就绪 · 首次启动时请选择桌面并授权</span
+              >准备就绪 · 开启摄像头前请选择保存文件夹</span
             ><span class="legend">实线：目标　橙色虚线：移动</span>
           </div>
         </section>
@@ -71,7 +71,7 @@
               <button id="start" class="primary">开始监测</button
               ><button id="stop" class="danger" disabled>停止监测</button
               ><button id="snapshot" class="secondary" disabled>手动截图</button
-              ><button id="chooseFolder" class="secondary">选择桌面目录</button>
+              ><button id="chooseFolder" class="secondary">选择保存目录</button>
             </div>
             <label class="field device-field"
               ><span>摄像头</span
@@ -183,16 +183,14 @@
               <h2>截图保存</h2>
               <span class="small">PNG · 本地文件夹</span>
             </div>
-            <div id="folderName" class="folder-path">
-              桌面 / Screenshots（待授权）
-            </div>
+            <div id="folderName" class="folder-path">尚未选择保存文件夹</div>
             <div
               id="captureStatus"
               class="capture-status"
               role="status"
               aria-live="polite"
             >
-              首次启动选择桌面，自动检查或创建 Screenshots
+              开启摄像头时选择目录，截图直接保存到该目录
             </div>
           </section>
           <section class="control-panel preview-panel">

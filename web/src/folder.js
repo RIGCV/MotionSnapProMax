@@ -1,41 +1,35 @@
-﻿export async function screenshotsDirectory(parent) {
-  return parent.getDirectoryHandle("Screenshots", { create: true });
-}
-function database() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("motionsnap-preferences", 1);
-    request.onupgradeneeded = () =>
-      request.result.createObjectStore("settings");
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+﻿// Invoke the native picker immediately from the user's click. Never restore
+// an old Desktop handle or create a child directory behind the selection.
+export async function selectCaptureDirectory(picker) {
+  if (typeof picker !== "function") {
+    const error = new Error(
+      "当前浏览器不支持选择保存文件夹。请使用桌面版 Chrome 或 Edge，或关闭“移动即截图”仅预览。",
+    );
+    error.name = "NotSupportedError";
+    throw error;
+  }
+  const selected = await picker({
+    id: "motionsnap-save-folder",
+    mode: "readwrite",
   });
-}
-export async function loadParent() {
-  const db = await database();
-  try {
-    return await new Promise((resolve, reject) => {
-      const r = db
-        .transaction("settings")
-        .objectStore("settings")
-        .get("capture-parent");
-      r.onsuccess = () => resolve(r.result);
-      r.onerror = () => reject(r.error);
-    });
-  } finally {
-    db.close();
+  if (
+    typeof selected.queryPermission === "function" &&
+    (await selected.queryPermission({ mode: "readwrite" })) !== "granted"
+  ) {
+    const error = new Error(
+      "未获得所选文件夹的写入权限，请重新选择可写的普通文件夹并允许保存。",
+    );
+    error.name = "NotAllowedError";
+    throw error;
   }
+  return selected;
 }
-export async function rememberParent(handle) {
-  const db = await database();
-  try {
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction("settings", "readwrite");
-      tx.objectStore("settings").put(handle, "capture-parent");
-      tx.oncomplete = resolve;
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
-    });
-  } finally {
-    db.close();
-  }
+export function folderErrorMessage(error) {
+  if (error.name === "AbortError")
+    return "已取消选择保存文件夹，摄像头未开启。点击开始监测可重试。";
+  if (error.name === "SecurityError")
+    return "无法打开文件夹选择窗口。请在 Chrome 或 Edge 中直接打开网站，再点击开始监测。";
+  if (error.name === "NotAllowedError")
+    return "文件夹写入授权未通过，请选择可写的普通文件夹并允许保存。";
+  return error.message || "保存文件夹不可用，请重新选择。";
 }

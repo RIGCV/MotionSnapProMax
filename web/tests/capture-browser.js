@@ -44,8 +44,7 @@ const until = async (fn, timeout = 90000) => {
 };
 try {
   await import("../src/main.js");
-  await document.getElementById("chooseFolder").onclick();
-  const testFolder = await directory.getDirectoryHandle("Screenshots");
+  const testFolder = directory;
   await testFolder.getFileHandle("preserved.txt", { create: true });
   document.getElementById("start").click();
   await until(
@@ -59,9 +58,7 @@ try {
     throw new Error("Static scene kept saving");
   document.getElementById("stop").click();
   const entries = [];
-  for await (const [name, handle] of (
-    await directory.getDirectoryHandle("Screenshots")
-  ).entries()) {
+  for await (const [name, handle] of directory.entries()) {
     if (name === "preserved.txt") continue;
     const file = await handle.getFile();
     const bytes = new Uint8Array(await file.arrayBuffer());
