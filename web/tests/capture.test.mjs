@@ -111,59 +111,92 @@ test("file save commits through close and aborts after write error", async () =>
 });
 
 import { selectCaptureDirectory, folderErrorMessage } from "../src/folder.js";
-test("picker opens immediately with readwrite access and returns exactly the selected folder", async () => {
-  let called = false;
+test("selection is immediate, directory is retained before separate write authorization", async () => {
+  const events = [];
   const selected = {
-    name: "My captures",
     queryPermission: async (options) => {
-      assert.deepEqual(options, { mode: "readwrite" });
+      assert.equal(options.mode, "readwrite");
+      events.push("query");
+      return "prompt";
+    },
+    requestPermission: async (options) => {
+      assert.equal(options.mode, "readwrite");
+      events.push("request");
       return "granted";
     },
-    getDirectoryHandle: () =>
-      assert.fail("No child directory should be created"),
   };
-  const pending = selectCaptureDirectory((options) => {
-    called = true;
-    assert.equal(options.mode, "readwrite");
-    assert.equal(options.startIn, undefined);
-    return Promise.resolve(selected);
-  });
-  assert.equal(
-    called,
-    true,
-    "picker must run within click activation, before other asynchronous work",
+  const pending = selectCaptureDirectory(
+    (options) => {
+      events.push("picker");
+      assert.equal(options.mode, "read");
+      return Promise.resolve(selected);
+    },
+    undefined,
+    (handle) => {
+      assert.equal(handle, selected);
+      events.push("selected");
+    },
   );
+  assert.deepEqual(events, ["picker"]);
   assert.equal(await pending, selected);
+  assert.deepEqual(events, ["picker", "selected", "query", "request"]);
 });
-test("every new selection opens the picker; no old desktop handle is restored", async () => {
-  const folders = [{ name: "A" }, { name: "B" }];
-  let calls = 0;
-  const picker = async () => folders[calls++];
-  assert.equal(await selectCaptureDirectory(picker), folders[0]);
-  assert.equal(await selectCaptureDirectory(picker), folders[1]);
-  assert.equal(calls, 2);
-});
-test("cancel, denied permission and unsupported browser fail without a fallback directory", async () => {
-  const cancelled = new DOMException("Cancelled", "AbortError");
-  await assert.rejects(
-    selectCaptureDirectory(async () => {
-      throw cancelled;
-    }),
-    (e) => e === cancelled,
+test("already selected and authorized directory is reused without another picker or permission prompt", async () => {
+  const selected = {
+    queryPermission: async () => "granted",
+    requestPermission: () => assert.fail("Already granted"),
+  };
+  assert.equal(
+    await selectCaptureDirectory(
+      () => assert.fail("Do not reopen picker"),
+      selected,
+    ),
+    selected,
   );
+});
+test("denied write permission retains selection and retry can authorize without choosing again", async () => {
+  let retained,
+    allowed = false;
+  const selected = {
+    queryPermission: async () => "prompt",
+    requestPermission: async () => (allowed ? "granted" : "denied"),
+  };
   await assert.rejects(
-    selectCaptureDirectory(async () => ({
-      queryPermission: async () => "denied",
-    })),
+    selectCaptureDirectory(
+      async () => selected,
+      undefined,
+      (h) => (retained = h),
+    ),
     { name: "NotAllowedError" },
   );
+  assert.equal(retained, selected);
+  allowed = true;
+  assert.equal(
+    await selectCaptureDirectory(() => assert.fail(), retained),
+    selected,
+  );
+});
+test("AbortError does not accuse user of cancelling and has no automatic retry loop", async () => {
+  let count = 0;
+  await assert.rejects(
+    selectCaptureDirectory(async () => {
+      count++;
+      throw new DOMException("Rejected", "AbortError");
+    }),
+    { name: "AbortError" },
+  );
+  assert.equal(count, 1);
+  const message = folderErrorMessage({ name: "AbortError" });
+  assert.ok(message.includes("目录访问受限"));
+  assert.ok(!message.startsWith("已取消"));
+});
+test("unsupported browser fails clearly; no fallback directory or implicit creation", async () => {
   await assert.rejects(selectCaptureDirectory(undefined), {
     name: "NotSupportedError",
   });
-  assert.ok(folderErrorMessage(cancelled).includes("取消"));
-  assert.ok(
-    folderErrorMessage(new DOMException("Denied", "NotAllowedError")).includes(
-      "文件夹",
-    ),
-  );
+  const selected = {
+    queryPermission: async () => "granted",
+    getDirectoryHandle: () => assert.fail("Must not create a directory"),
+  };
+  assert.equal(await selectCaptureDirectory(async () => selected), selected);
 });

@@ -31,6 +31,7 @@ let tracks = [],
   motionDetector,
   motion = { active: false, regions: [] },
   directory,
+  directoryWritable = false,
   saved = 0;
 const gate = new CaptureGate(),
   previews = [];
@@ -141,9 +142,11 @@ function refreshCaptureStatus() {
       ? "自动截图已关闭"
       : !directory
         ? "开启摄像头前请选择截图保存文件夹"
-        : !running
-          ? "文件夹已就绪 · 开启摄像头后自动保存"
-          : "移动即保存 · 无间隔",
+        : !directoryWritable
+          ? "目录已选中，请点击授权保存"
+          : !running
+            ? "文件夹已就绪 · 开启摄像头后自动保存"
+            : "移动即保存 · 无间隔",
   );
 }
 async function snapshotBlob() {
@@ -199,7 +202,8 @@ async function autoSave() {
     !running ||
     document.hidden ||
     !$("autoCapture").checked ||
-    directory !== folder
+    directory !== folder ||
+    !directoryWritable
   )
     return false;
   await saveBlob(folder, name, blob);
@@ -230,7 +234,8 @@ function renderLive(now) {
         .attempt(
           {
             active: motion.active,
-            enabled: !!directory && $("autoCapture").checked,
+            enabled:
+              !!directory && directoryWritable && $("autoCapture").checked,
           },
           autoSave,
         )
@@ -348,15 +353,15 @@ async function start() {
   try {
     if (!isSecureContext || !navigator.mediaDevices?.getUserMedia)
       throw new Error("请使用 HTTPS 和新版 Chrome / Edge 打开网页。");
-    if (window.showDirectoryPicker || $("autoCapture").checked) {
+    if ($("autoCapture").checked || directory) {
       try {
         if (!(await prepareDirectory(thisToken))) return;
       } catch (error) {
         if (thisToken === token) {
           stop({ keepStatus: true });
           const message = folderErrorMessage(error);
-          status(message, error.name !== "AbortError");
-          captureMessage(message, error.name !== "AbortError");
+          status(message, true);
+          captureMessage(message, true);
         }
         return;
       }
@@ -457,18 +462,35 @@ $("start").onclick = start;
 $("emptyStart").onclick = start;
 $("stop").onclick = () => stop();
 let choosingFolder = false;
-async function prepareDirectory(expectedToken = token) {
+async function prepareDirectory(expectedToken = token, forcePick = false) {
   choosingFolder = true;
   updateButtons();
   try {
     const selected = await selectCaptureDirectory(
       window.showDirectoryPicker?.bind(window),
+      forcePick ? undefined : directory,
+      (selected) => {
+        if (expectedToken !== token) return;
+        directory = selected;
+        directoryWritable = false;
+        $("folderName").textContent = selected.name;
+        $("authorizeFolder").hidden = false;
+        captureMessage("目录已选中，正在请求写入权限…");
+      },
     );
     if (expectedToken !== token) return false;
     directory = selected;
+    directoryWritable = true;
+    $("authorizeFolder").hidden = true;
     $("folderName").textContent = selected.name;
     refreshCaptureStatus();
     return true;
+  } catch (error) {
+    if (error.folderStage === "write" && directory) {
+      directoryWritable = false;
+      $("authorizeFolder").hidden = false;
+    }
+    throw error;
   } finally {
     choosingFolder = false;
     updateButtons();
@@ -477,14 +499,17 @@ async function prepareDirectory(expectedToken = token) {
 $("chooseFolder").onclick = async () => {
   if (choosingFolder || starting) return;
   try {
+    await prepareDirectory(token, true);
+  } catch (error) {
+    captureMessage(folderErrorMessage(error), true);
+  }
+};
+$("authorizeFolder").onclick = async () => {
+  if (choosingFolder || starting) return;
+  try {
     await prepareDirectory();
   } catch (error) {
-    captureMessage(
-      error.name === "AbortError"
-        ? "已取消更换，保留原保存文件夹。"
-        : folderErrorMessage(error),
-      error.name !== "AbortError",
-    );
+    captureMessage(folderErrorMessage(error), true);
   }
 };
 if (!("showDirectoryPicker" in window)) {
@@ -512,6 +537,8 @@ $("snapshot").onclick = async () => {
     const blob = await snapshotBlob(),
       name = captureName(new Date(), "manual");
     if (directory) {
+      if (!directoryWritable)
+        throw new Error("请先点击授权保存，允许写入所选文件夹。");
       await saveBlob(directory, name, blob);
       saved++;
       addPreview(blob, name);
