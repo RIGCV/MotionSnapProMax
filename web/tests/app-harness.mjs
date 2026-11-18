@@ -17,6 +17,8 @@ export const tick = () => new Promise((r) => setImmediate(r));
 // Pure Node test double: no browser, camera or OS permission is accessed.
 export async function appHarness() {
   const events = [],
+    windowEvents = new Map(),
+    documentEvents = new Map(),
     files = new Map(),
     nodes = new Map(),
     frames = new Map();
@@ -107,6 +109,7 @@ export async function appHarness() {
     readyState: 2,
     play: async () => {
       events.push("play");
+      if (state.playError) throw state.playError;
     },
     pause: () => {},
     srcObject: null,
@@ -154,7 +157,7 @@ export async function appHarness() {
       if (options.mode !== "readwrite") throw new Error("readwrite required");
       return state.pick ? state.pick(options) : Promise.resolve(directory);
     },
-    addEventListener() {},
+    addEventListener(name, handler) { windowEvents.set(name, handler); },
   };
   window.top = window;
   const navigator = {
@@ -164,6 +167,7 @@ export async function appHarness() {
       getUserMedia: async () => {
         events.push("camera");
         state.cameraCount++;
+        if (state.cameraWait) return state.cameraWait.promise;
         return {
           getTracks: () => [
             {
@@ -212,7 +216,7 @@ export async function appHarness() {
         return nodes.get(id);
       },
       createElement: () => new Element(),
-      addEventListener() {},
+      addEventListener(name, handler) { documentEvents.set(name, handler); },
     },
     console,
     URL,
@@ -264,5 +268,7 @@ export async function appHarness() {
     directory,
     window,
     frames,
+    windowEvents,
+    documentEvents,
   };
 }

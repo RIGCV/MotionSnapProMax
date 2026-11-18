@@ -19,6 +19,7 @@ let worker,
   initPromise,
   rejectInit,
   stream,
+  cameraPending = false,
   running = false,
   starting = false,
   token = 0,
@@ -52,7 +53,7 @@ function updateButtons() {
     "quality",
     "cameraSelect",
   ])
-    $(id).disabled = starting || running || choosingFolder || gate.busy;
+    $(id).disabled = starting || running || choosingFolder || gate.busy || cameraPending;
   $("chooseFolder").disabled =
     starting ||
     running ||
@@ -327,7 +328,21 @@ function handleResult(data) {
     );
   }
 }
-function stop({ keepStatus = false } = {}) {
+function releaseCamera() {
+  // Release both references before touching Worker/UI code, including failures.
+  const streams = new Set([stream, video.srcObject]);
+  stream = null;
+  video.srcObject = null;
+  for (const source of streams) {
+    for (const track of source?.getTracks?.() || []) {
+      try { track.stop(); } catch (error) {
+        logEvent("camera-release", "failed", errorDetail(error));
+      }
+    }
+  }
+  video.pause();
+}
+function stop({ keepStatus = false, dispose = false } = {}) {
   const wasBusy = busy;
   token++;
   directoryPrepared = false;
@@ -337,7 +352,8 @@ function stop({ keepStatus = false } = {}) {
   busy = false;
   clearTimeout(timer);
   cancelAnimationFrame(renderTimer);
-  if (wasBusy || !modelReady) {
+  releaseCamera();
+  if (dispose || wasBusy || !modelReady) {
     worker?.terminate();
     worker = null;
     modelReady = false;
@@ -349,10 +365,6 @@ function stop({ keepStatus = false } = {}) {
     $("engineStatus").textContent = "YOLO26n · 等待启动";
   }
   $("loadProgress").hidden = true;
-  stream?.getTracks().forEach((t) => t.stop());
-  stream = null;
-  video.pause();
-  video.srcObject = null;
   worker?.postMessage({ type: "reset" });
   $("liveDot").classList.remove("active");
   $("stageStatus").textContent = "已停止";
@@ -374,7 +386,7 @@ function fail(error) {
   const messages = {
     NotAllowedError: "摄像头权限被拒绝，请在地址栏允许访问摄像头后重试。",
     NotFoundError: "未找到摄像头，请连接摄像头后重试。",
-    NotReadableError: "摄像头无法打开，请关闭占用摄像头的其他应用。",
+    NotReadableError: "摄像头暂时无法读取，本页资源已释放。请检查其他标签页或应用是否占用摄像头、设备连接及系统权限，再重试。",
     OverconstrainedError: "所选摄像头不可用，请尝试默认摄像头。",
   };
   status(messages[error.name] || error.message, true);
@@ -395,7 +407,7 @@ async function enumerateCameras() {
     $("cameraSelect").value = current;
 }
 async function start() {
-  if (starting || running || choosingFolder || gate.busy) return;
+  if (starting || running || choosingFolder || gate.busy || cameraPending) return;
   const reuseSelected = directoryPrepared;
   stop({ keepStatus: true });
   const thisToken = token;
@@ -428,7 +440,10 @@ async function start() {
     status("正在打开摄像头…");
     logEvent("camera", "request", { session: thisToken });
     const deviceId = $("cameraSelect").value;
-    const acquired = await navigator.mediaDevices.getUserMedia({
+    cameraPending = true;
+    let acquired;
+    try {
+      acquired = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
         width: { ideal: 1280 },
@@ -436,7 +451,11 @@ async function start() {
         facingMode: "environment",
         ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
       },
-    });
+      });
+    } finally {
+      cameraPending = false;
+      updateButtons();
+    }
     if (thisToken !== token) {
       acquired.getTracks().forEach((t) => t.stop());
       return;
@@ -523,6 +542,15 @@ async function submitFrame() {
 $("start").onclick = start;
 $("emptyStart").onclick = start;
 $("stop").onclick = () => stop();
+function exitSession() {
+  stop({ dispose: true });
+  canvas.hidden = true;
+  $("emptyState").hidden = false;
+  $("stageLabel").hidden = true;
+  $("stageClock").hidden = true;
+  status("已退出监测 · 摄像头已释放，可安全关闭网页");
+}
+$("exit").onclick = exitSession;
 let choosingFolder = false;
 async function prepareDirectory(expectedToken = token, forcePick = false) {
   if (choosingFolder) return false;
@@ -621,10 +649,11 @@ document.addEventListener("visibilitychange", () => {
       document.hidden ? "页面已切换到后台，监测暂时暂停" : "已恢复前台监测",
     );
 });
-window.addEventListener("pagehide", () => {
-  stop({ keepStatus: true });
-  worker?.terminate();
-});
+// No asynchronous work or confirmation dialog in teardown. A late media
+// request is invalidated by token and its tracks are stopped when it resolves.
+window.addEventListener("pagehide", exitSession);
+window.addEventListener("beforeunload", exitSession);
+document.addEventListener("freeze", exitSession);
 enumerateCameras().catch(() => {});
 updateButtons();
 async function ensureModel() {

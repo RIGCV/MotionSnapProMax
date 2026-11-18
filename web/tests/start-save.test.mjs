@@ -1,6 +1,76 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { appHarness, deferred, tick } from "./app-harness.mjs";
+test("exit and page lifecycle release media, dispose worker and allow a fresh model on restart", async () => {
+  for (const event of ["exit", "pagehide", "beforeunload", "freeze"]) {
+    const h = await appHarness();
+    await h.app.start();
+    const exit = event === "exit" ? h.nodes.get("exit").onclick
+      : (event === "freeze" ? h.documentEvents : h.windowEvents).get(event);
+    exit();
+    assert.equal(h.state.stopCount, 1);
+    assert.equal(h.nodes.get("video").srcObject, null);
+    assert.equal(h.app.getState().running, false);
+    assert.equal(h.frames.size, 0);
+    assert.ok(h.events.includes("worker-terminate"));
+    assert.equal(h.nodes.get("emptyState").hidden, false);
+    exit();
+    assert.equal(h.state.stopCount, 1, "repeated teardown is idempotent");
+    await h.app.start();
+    assert.equal(h.events.filter(x => x === "worker-init").length, 2);
+    assert.equal(h.app.getState().running, true);
+    h.app.stop();
+  }
+});
+test("exit during camera acquisition blocks overlapping requests and releases a late stream", async () => {
+  const h = await appHarness();
+  h.state.cameraWait = deferred();
+  const start = h.app.start();
+  await tick();
+  assert.equal(h.state.cameraCount, 1);
+  h.nodes.get("exit").onclick();
+  assert.equal(h.nodes.get("start").disabled, true);
+  await h.app.start();
+  assert.equal(h.state.cameraCount, 1);
+  let stopped = 0;
+  h.state.cameraWait.resolve({ getTracks: () => [{ stop: () => stopped++ }] });
+  await start;
+  assert.equal(stopped, 1);
+  assert.equal(h.nodes.get("video").srcObject, null);
+  assert.equal(h.app.getState().running, false);
+  assert.equal(h.nodes.get("start").disabled, false);
+  h.state.cameraWait = null;
+  await h.app.start();
+  assert.equal(h.app.getState().running, true);
+  h.app.stop();
+});
+test("video playback failure releases acquired camera and permits retry", async () => {
+  const h = await appHarness();
+  h.state.playError = new DOMException("Device unavailable", "NotReadableError");
+  await h.app.start();
+  assert.equal(h.state.stopCount, 1);
+  assert.equal(h.nodes.get("video").srcObject, null);
+  assert.equal(h.app.getState().running, false);
+  assert.equal(h.nodes.get("start").disabled, false);
+  h.state.playError = null;
+  await h.app.start();
+  h.app.stop();
+});
+test("exit releases camera immediately while the last file write finishes", async () => {
+  const h = await appHarness();
+  await h.app.start();
+  h.state.closeWait = deferred();
+  const capture = h.app.captureFrame("manual");
+  await tick();
+  h.nodes.get("exit").onclick();
+  assert.equal(h.state.stopCount, 1);
+  assert.equal(h.app.getState().saved, 0);
+  h.state.closeWait.resolve();
+  await capture;
+  assert.equal(h.files.size, 1);
+  assert.equal(h.app.getState().saved, 1);
+  assert.equal(h.nodes.get("start").disabled, false);
+});
 test("start calls picker synchronously before permission, camera and model; duplicate clicks open only once", async () => {
   const h = await appHarness(),
     pick = deferred();
