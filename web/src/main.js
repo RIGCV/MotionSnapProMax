@@ -4,7 +4,7 @@ import { MotionDetector } from "./motion.js";
 import { CaptureGate, captureName, saveBlob } from "./capture.js";
 import { selectCaptureDirectory, folderErrorMessage } from "./folder.js";
 import { logEvent, errorDetail, getDiagnostics } from "./diagnostics.js";
-import { selectBuiltInCamera } from "./camera.js";
+import { selectBuiltInCamera, stopMediaTracks, acquireCameraLease } from "./camera.js";
 window.motionSnapDiagnostics = getDiagnostics;
 const $ = (id) => document.getElementById(id),
   video = $("video"),
@@ -21,12 +21,14 @@ let worker,
   rejectInit,
   stream,
   cameraPending = false,
+  releaseCameraLease,
   running = false,
   starting = false,
   token = 0,
   timer,
   renderTimer,
   busy = false;
+let inferenceStartedAt = 0;
 let cameraWatchdog, cameraPhase = "idle", cameraProgressAt = 0, cameraVideoTime = -1;
 function watchCamera(phase) {
   clearTimeout(cameraWatchdog);
@@ -38,6 +40,10 @@ function watchCamera(phase) {
 function checkCameraHealth(now = performance.now()) {
   clearTimeout(cameraWatchdog);
   if (cameraPhase === "idle") return;
+  if (cameraPhase === "running" && busy && now - inferenceStartedAt >= 20000) {
+    fail(new Error("检测引擎长时间未响应，已停止监测并释放摄像头，请重试。"));
+    return;
+  }
   if (cameraPhase === "running" && video.readyState >= 2 &&
       video.currentTime !== cameraVideoTime) {
     cameraVideoTime = video.currentTime;
@@ -311,6 +317,10 @@ async function captureFrame(kind = "auto") {
   }
 }
 function renderLive(now) {
+  try { renderLiveFrame(now); }
+  catch (error) { fail(error); }
+}
+function renderLiveFrame(now) {
   if (!running) return;
   if (!document.hidden && video.readyState >= 2) {
     if (video.currentTime !== lastMotionVideoTime) {
@@ -360,15 +370,16 @@ function releaseCamera() {
   // Release both references before touching Worker/UI code, including failures.
   const streams = new Set([stream, video.srcObject]);
   stream = null;
-  video.srcObject = null;
   for (const source of streams) {
-    for (const track of source?.getTracks?.() || []) {
-      try { track.stop(); } catch (error) {
-        logEvent("camera-release", "failed", errorDetail(error));
-      }
-    }
+    stopMediaTracks(source, error => logEvent("camera-release", "failed", errorDetail(error)));
   }
-  video.pause();
+  // DOM cleanup must never prevent stopping the actual device tracks.
+  try { video.srcObject = null; video.pause(); }
+  catch (error) { logEvent("video-detach", "failed", errorDetail(error)); }
+}
+function releaseLease() {
+  releaseCameraLease?.();
+  releaseCameraLease = null;
 }
 function stop({ keepStatus = false, dispose = false } = {}) {
   clearTimeout(cameraWatchdog);
@@ -383,6 +394,7 @@ function stop({ keepStatus = false, dispose = false } = {}) {
   clearTimeout(timer);
   cancelAnimationFrame(renderTimer);
   releaseCamera();
+  if (!cameraPending) releaseLease();
   if (dispose || wasBusy || !modelReady) {
     worker?.terminate();
     worker = null;
@@ -409,7 +421,9 @@ function stop({ keepStatus = false, dispose = false } = {}) {
   refreshCaptureStatus();
   if (gate.busy && !storageFailure)
     captureMessage("监测已停止，正在完成最后一张写入…");
-  if (!keepStatus) status("监测已停止 · 摄像头已释放");
+  if (!keepStatus) status(cameraPending
+    ? "已停止监测 · 正在等待浏览器结束摄像头请求；若一直未结束，请关闭本标签页。"
+    : "监测已停止 · 摄像头已释放");
 }
 function fail(error) {
   stop({ keepStatus: true });
@@ -427,18 +441,22 @@ async function enumerateCameras() {
   $("cameraSelect").replaceChildren(new Option(device?.label || "电脑内置摄像头（自动识别）", device?.deviceId || ""));
 }
 async function openBuiltInCamera(session) {
+  const release = await acquireCameraLease(navigator.locks);
+  if (session !== token) { release(); return null; }
+  releaseCameraLease = release;
   const media = navigator.mediaDevices;
   let devices = await media.enumerateDevices();
   if (session !== token) return null;
   let selected = selectBuiltInCamera(devices);
   const constraints = (device) => ({ audio: false, video: {
-    width: { ideal: 1280 }, height: { ideal: 720 },
+    width: { ideal: 640, max: 640 }, height: { ideal: 480, max: 480 },
+    frameRate: { ideal: 30, max: 30 },
     ...(device ? { deviceId: { exact: device.deviceId } } : { facingMode: "user" }),
   } });
   const acquire = async (device) => {
     const acquired = await media.getUserMedia(constraints(device));
     if (session !== token) {
-      acquired.getTracks().forEach(track => track.stop());
+      stopMediaTracks(acquired);
       return null;
     }
     // Own the stream immediately so exit also releases a permission probe.
@@ -497,6 +515,12 @@ async function start() {
       if (thisToken !== token) return;
     }
     directoryPrepared = false;
+    // Loading the model can take minutes or fail. Do not reserve the hardware
+    // until it is ready; cancellation here must never open a camera.
+    status("正在加载本地检测模型…");
+    watchCamera("loading");
+    await ensureModel();
+    if (thisToken !== token) return;
     status("正在打开摄像头…");
     logEvent("camera", "request", { session: thisToken });
     watchCamera("opening");
@@ -506,11 +530,12 @@ async function start() {
       acquired = await openBuiltInCamera(thisToken);
     } finally {
       cameraPending = false;
+      if (thisToken !== token) releaseLease();
       updateButtons();
     }
     if (!acquired) return;
     if (thisToken !== token) {
-      acquired.getTracks().forEach((t) => t.stop());
+      stopMediaTracks(acquired);
       return;
     }
     logEvent("camera", "acquired", { session: thisToken });
@@ -540,10 +565,6 @@ async function start() {
     $("emptyState").hidden = true;
     draw();
     $("sourceResolution").textContent = `${width} × ${height}`;
-    status("正在加载本地检测模型…");
-    watchCamera("loading");
-    await ensureModel();
-    if (thisToken !== token) return;
     worker.postMessage({ type: "reset" });
     starting = false;
     running = true;
@@ -574,6 +595,7 @@ async function submitFrame() {
   }
   const thisToken = token;
   busy = true;
+  inferenceStartedAt = performance.now();
   try {
     lastVideoTime = video.currentTime;
     frameCtx.drawImage(video, 0, 0, frame.width, frame.height);
@@ -606,7 +628,9 @@ function exitSession() {
   $("emptyState").hidden = false;
   $("stageLabel").hidden = true;
   $("stageClock").hidden = true;
-  status("已退出监测 · 摄像头已释放，可安全关闭网页");
+  status(cameraPending
+    ? "已退出监测 · 浏览器摄像头请求尚未结束，请关闭本标签页以结束请求。"
+    : "已退出监测 · 摄像头已释放，可安全关闭网页");
 }
 $("exit").onclick = exitSession;
 let choosingFolder = false;
@@ -703,7 +727,9 @@ document.addEventListener("visibilitychange", () => {
     stop({ dispose: true });
     canvas.hidden = true;
     $("emptyState").hidden = false;
-    status("页面已切到后台，已停止监测并释放摄像头。返回后请点击开始监测。");
+    status(cameraPending
+      ? "页面已停止监测，浏览器摄像头请求仍在结束；若一直未结束，请关闭本标签页。"
+      : "页面已切到后台，已停止监测并释放摄像头。返回后请点击开始监测。");
   }
 });
 // No asynchronous work or confirmation dialog in teardown. A late media
@@ -725,12 +751,14 @@ async function ensureModel() {
   worker = new Worker(new URL("./inference.worker.js", import.meta.url), {
     type: "module",
   });
+  const owner = worker;
   $("loadProgress").hidden = false;
   $("engineDot").classList.remove("active");
   $("engineStatus").textContent = "正在加载模型";
   const promise = new Promise((resolve, reject) => {
     rejectInit = reject;
     worker.onmessage = ({ data }) => {
+      if (worker !== owner) return;
       if (data.type === "progress") {
         $("progress").value = data.progress;
         $("loadText").textContent = data.text;
@@ -745,7 +773,9 @@ async function ensureModel() {
           `YOLO26n · ${data.size} × ${data.size} · 浏览器本地推理`;
         resolve();
       }
-      if (data.type === "result") handleResult(data);
+      if (data.type === "result") {
+        try { handleResult(data); } catch (error) { fail(error); }
+      }
       if (data.type === "error") {
         if (!modelReady) reject(new Error(data.message));
         else if (data.token === token) {
@@ -754,6 +784,7 @@ async function ensureModel() {
       }
     };
     worker.onerror = (event) => {
+      if (worker !== owner) return;
       const error = new Error(
         event.message || "推理线程启动失败，请重新加载页面。",
       );

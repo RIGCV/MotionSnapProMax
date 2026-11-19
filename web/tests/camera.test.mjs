@@ -1,9 +1,96 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appHarness, deferred, tick } from "./app-harness.mjs";
+import { appHarness, deferred, tick, mockLocks } from "./app-harness.mjs";
 import { selectBuiltInCamera } from "../src/camera.js";
 const physical = { kind: "videoinput", label: "Chicony USB2.0 Camera", deviceId: "chicony" };
 const virtual = { kind: "videoinput", label: "vivo Virtual Camera", deviceId: "vivo" };
+
+test("model loading and its cancellation never reserve a camera", async () => {
+  const h = await appHarness();
+  h.state.modelWait = deferred();
+  const pending = h.app.start();
+  await tick();
+  assert.equal(h.state.cameraCount, 0);
+  h.app.stop();
+  await pending;
+  assert.equal(h.state.cameraCount, 0);
+});
+
+test("same-origin pages cannot acquire the camera concurrently", async () => {
+  const locks = mockLocks();
+  const a = await appHarness({ locks }), b = await appHarness({ locks });
+  await a.app.start();
+  await b.app.start();
+  assert.equal(b.state.cameraCount, 0);
+  assert.match(b.nodes.get("statusText").textContent, /另一个 MotionSnap/);
+  a.app.stop();
+  await tick();
+  await b.app.start();
+  assert.equal(b.state.cameraCount, 1);
+  b.app.stop();
+});
+
+test("cancelled pending request keeps the cross-tab lease until late stream is stopped", async () => {
+  const locks = mockLocks();
+  const a = await appHarness({ locks }), b = await appHarness({ locks });
+  a.state.cameraWait = deferred();
+  const pending = a.app.start();
+  await tick();
+  a.app.stop();
+  assert.match(a.nodes.get("statusText").textContent, /等待浏览器/);
+  await b.app.start();
+  assert.equal(b.state.cameraCount, 0);
+  let released = 0;
+  a.state.cameraWait.resolve({ getTracks: () => [{ stop() { released++; } }] });
+  await pending;
+  await tick();
+  assert.equal(released, 1);
+  await b.app.start();
+  assert.equal(b.state.cameraCount, 1);
+  b.app.stop();
+});
+
+test("detaching a broken video element cannot bypass device release", async () => {
+  const h = await appHarness();
+  await h.app.start();
+  const source = h.nodes.get("video").srcObject;
+  Object.defineProperty(h.nodes.get("video"), "srcObject", {
+    get: () => source, set: () => { throw new Error("detached DOM"); },
+  });
+  h.app.stop();
+  assert.equal(h.state.stopCount, 1);
+  assert.equal(h.app.getState().running, false);
+});
+
+test("capture requests cap resolution and FPS instead of requesting HD by default", async () => {
+  const h = await appHarness();
+  await h.app.start();
+  const video = h.state.cameraConstraints[0].video;
+  assert.equal(video.width.max, 640);
+  assert.equal(video.height.max, 480);
+  assert.equal(video.frameRate.max, 30);
+  h.app.stop();
+});
+
+test("render failure releases camera instead of leaving a live stream with a frozen UI", async () => {
+  const h = await appHarness();
+  await h.app.start();
+  await tick();
+  h.nodes.get("canvas").getContext().drawImage = () => { throw new Error("canvas lost"); };
+  h.app.renderLive(performance.now());
+  assert.equal(h.state.stopCount, 1);
+  assert.equal(h.app.getState().running, false);
+});
+
+test("hung inference releases camera even when video frames continue arriving", async () => {
+  const h = await appHarness();
+  await h.app.start();
+  await tick();
+  h.nodes.get("video").currentTime++;
+  h.app.checkCameraHealth(performance.now() + 21000);
+  assert.equal(h.state.stopCount, 1);
+  assert.match(h.nodes.get("statusText").textContent, /检测引擎长时间未响应/);
+});
 
 test("background page releases camera and does not automatically reopen", async () => {
   const h = await appHarness();

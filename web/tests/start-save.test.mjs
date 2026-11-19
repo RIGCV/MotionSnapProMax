@@ -85,7 +85,7 @@ test("start calls picker synchronously before permission, camera and model; dupl
   assert.equal(h.app.getState().running, true);
   assert.ok(h.events.indexOf("picker") < h.events.indexOf("permission-query"));
   assert.ok(h.events.indexOf("permission-query") < h.events.indexOf("camera"));
-  assert.ok(h.events.indexOf("camera") < h.events.indexOf("worker-init"));
+  assert.ok(h.events.indexOf("worker-init") < h.events.indexOf("camera"));
   h.app.stop();
 });
 test("picker AbortError does not start camera, unlocks buttons and allows retry", async () => {

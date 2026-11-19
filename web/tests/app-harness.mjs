@@ -5,7 +5,7 @@ import { CaptureGate, captureName, saveBlob } from "../src/capture.js";
 import { selectCaptureDirectory, folderErrorMessage } from "../src/folder.js";
 import { CLASS_NAMES, COLORS, matchesCategory } from "../src/detection.js";
 import { MotionDetector } from "../src/motion.js";
-import { selectBuiltInCamera } from "../src/camera.js";
+import { selectBuiltInCamera, stopMediaTracks, acquireCameraLease } from "../src/camera.js";
 export const deferred = () => {
   let resolve, reject;
   const promise = new Promise((a, b) => {
@@ -16,7 +16,7 @@ export const deferred = () => {
 };
 export const tick = () => new Promise((r) => setImmediate(r));
 // Pure Node test double: no browser, camera or OS permission is accessed.
-export async function appHarness() {
+export async function appHarness({ locks = mockLocks() } = {}) {
   const events = [],
     windowEvents = new Map(),
     documentEvents = new Map(),
@@ -165,6 +165,7 @@ export async function appHarness() {
   };
   window.top = window;
   const navigator = {
+    locks,
     userActivation: { isActive: true },
     mediaDevices: {
       enumerateDevices: async () => state.devices,
@@ -192,7 +193,7 @@ export async function appHarness() {
       events.push("worker-" + data.type);
       if (data.type === "init")
         queueMicrotask(() =>
-          this.onmessage?.({
+          state.modelWait ? state.modelWait.promise.then(() => this.onmessage?.({ data: { type: "ready", size: 320, backend: "mock" } })) : this.onmessage?.({
             data: { type: "ready", size: 320, backend: "mock" },
           }),
         );
@@ -258,6 +259,8 @@ export async function appHarness() {
     matchesCategory,
     MotionDetector,
     selectBuiltInCamera,
+    stopMediaTracks,
+    acquireCameraLease,
     logEvent() {},
     errorDetail: (e) => ({ name: e.name, message: e.message }),
     getDiagnostics: () => [],
@@ -276,5 +279,17 @@ export async function appHarness() {
     frames,
     windowEvents,
     documentEvents,
+  };
+}
+
+export function mockLocks() {
+  let held = false;
+  return {
+    async request(name, options, callback) {
+      if (held) return callback(null);
+      held = true;
+      try { return await callback({ name }); }
+      finally { held = false; }
+    },
   };
 }
