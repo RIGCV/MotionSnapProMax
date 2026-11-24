@@ -24,7 +24,7 @@ export function acquireCameraLease(locks) {
   }
   return new Promise((resolve, reject) => {
     locks.request("motionsnap-camera", { mode: "exclusive", ifAvailable: true }, (lock) => {
-      if (!lock) throw new Error("另一个 MotionSnap 页面正在使用或请求摄像头，请先停止或关闭该页面。");
+      if (!lock) throw new Error("另一个 MotionSnap Pro Max 页面正在使用或请求摄像头，请先停止或关闭该页面。");
       return new Promise((release) => resolve(release));
     }).catch(reject);
   });

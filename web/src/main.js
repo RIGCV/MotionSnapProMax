@@ -164,7 +164,7 @@ function draw(target = ctx, timestamp = false) {
     target.strokeRect(r.x1 * w, r.y1 * h, (r.x2 - r.x1) * w, (r.y2 - r.y1) * h);
   target.setLineDash([]);
   if (timestamp) {
-    const label = `MotionSnap · ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
+    const label = `MotionSnap Pro Max · ${new Date().toLocaleString("zh-CN", { hour12: false })}`;
     target.fillStyle = "#101715cc";
     target.fillRect(
       0,

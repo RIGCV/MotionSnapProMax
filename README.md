@@ -1,35 +1,21 @@
 # MotionSnap Pro Max
 
-使用 YOLO26n 的浏览器本地多目标检测应用。网页由 GitHub Pages 托管，视频与图片在访问者自己的设备上处理，无需安装 Python 或 EXE，也没有视频上传服务。
+MotionSnap Pro Max 是运行在浏览器中的摄像头监测应用。它使用 YOLO26n 在本地识别并跟踪目标，可在画面发生移动时自动将 PNG 截图保存到你选择的文件夹。视频与截图均在设备上处理，不上传。
+
+[打开 MotionSnap Pro Max](https://rigcv.github.io/MotionSnapProMax/) · [GitHub 源码仓库](https://github.com/RIGCV/MotionSnapProMax)
 
 ## 使用
 
-访问 https://rigcv.github.io/MotionSnapProMax/ ，使用桌面版 Chrome / Edge。
+1. 使用桌面版 Edge 或 Chrome 打开网页，点击「开始监测」。
+2. 选择截图保存文件夹并授予写入权限，再按浏览器提示允许访问摄像头。
+3. 勾选「移动即截图」即可自动保存，也可以点击「手动截图」。你可以在右侧调整移动灵敏度、识别类别、模型精度和运行方式。
+4. 点击「停止监测」或「退出程序」可释放摄像头。切换到后台也会停止监测，回到页面后可重新开始。
 
-1. 点击「开始监测」或「开启摄像头」，在用户点击事件内同步发起 `showDirectoryPicker({mode: 'readwrite'})`。选择完成、验证写入权限后才初始化摄像头、加载模型。
-2. 用户选择的普通文件夹就是实际保存位置；不创建子目录，不读取绝对路径，不恢复 IndexedDB 中的旧授权。
-3. 停止后再次开始会重新选择目录。若先点击「选择保存目录」或「授权保存」准备好了目录，紧接着启动会使用该已准备的句柄，避免重复弹窗。刷新页面后重新选择。
-4. 移动触发条件、PNG 内容（检测框、标签、轨迹、时间戳）保持不变；仅在文件 `write()` 和 `close()` 都完成后增加保存计数。
-
-自动与手动截图共用一个编码/写入锁，不排队积压旧帧。停止立即释放摄像头；尚在编码的截图丢弃，已经进入写入的最后一张允许完成；完成前暂时禁用重新启动和换目录。写入失败暂停自动截图并清除可写状态，后台只查询权限、不请求权限。恢复后点击「授权保存」，再开启「移动即截图」。运行中若需换目录，请先停止监测。
-
-AbortError 仅表示选择/授权未完成，无法仅凭名称区分用户取消、敏感目录限制或浏览器拒绝。SecurityError、NotAllowedError、NotFoundError 和写盘失败分别提示，并保留原始异常阶段和消息。目录权限没有完成时不启动摄像头，不用下载模拟目录保存。
-
-开发诊断：控制台记录目录选择（含调用时 userActivation、secureContext、topLevel）、权限结果、摄像头和模型启动、写入错误。`window.motionSnapDiagnostics()` 返回最近 200 条本地记录；网址加 `?debug=1` 可在控制台查看每张截图的编码/写入阶段。日志不上传，不包含图像、目录句柄或主动获取的绝对路径。
-
-验收记录见 [web/VERIFICATION.md](web/VERIFICATION.md)。
-
-- 左侧为完整摄像头画面，等比例显示、不裁切；右侧为常显控制、运行状态、检测参数、保存状态和截图预览，无折叠设置。
-- 桌面端适应窗口高度；手机、低高度窗口允许必要的滚动以保持控件可用。系统字体，藏青底色。
-- 移动判断独立于 YOLO 类别，256 像素宽度画面差分随新帧执行，不再设置 10 Hz 定时采样。高、中、低灵敏度可选；微小、低对比度变化可能漏检，相机晃动和光影变化可能误触发。
-- 自动截图只有一个写入任务在途，忙碌时继续检测但不排队保存旧帧。实际保存频率受摄像头、PNG 编码和磁盘速度影响，不保证每个移动视频帧都写盘。持续移动会产生大量 PNG。
-- 只有成功写入才计数；写入失败关闭自动截图并显示错误。停止后不提交新截图，已经开始写入的最后一张可能完成。
-- YOLO26n 多目标检测、跟踪、320/640 精度和 GPU/CPU 模式保留。AI 检测频率选项只限制 AI 推理，不限制独立的移动判断。
-- 请固定摄像头并保持页面在前台。切换到后台会停止监测并释放摄像头，返回后需要重新点击开始；关闭网页也会释放。模型和运行时同源加载，画面不上传，无外部字体或统计请求。
+建议固定摄像头并保持页面在前台。移动判断与 AI 识别独立运行，机位晃动或光影变化也可能触发截图。截图在成功写入后计入保存数量。如果写入失败，重新授权保存后可再次开启「移动即截图」。
 
 ## 本地开发
 
-需要 Node.js 22.12 或更新版本。
+需要 Node.js 22.12 或更新版本。在仓库根目录运行以下命令。
 
 ```sh
 cd web
@@ -38,7 +24,9 @@ node scripts/download-assets.mjs
 npm run dev
 ```
 
-访问终端输出的 `http://localhost:5173` 地址。摄像头需要 HTTPS 或 localhost，不支持直接双击 HTML 文件运行。
+在浏览器打开终端显示的地址（默认 `http://localhost:5173`）。摄像头和目录写入功能需要 HTTPS 或 localhost。
+
+在 `web/` 目录运行测试和生产构建。
 
 ```sh
 npm test
@@ -46,41 +34,24 @@ npm run build
 npm run preview
 ```
 
-构建文件在 `web/dist/`，包含同源模型、ONNX Runtime JS/WASM 和示例图片，可部署到静态网站。Vite 使用相对路径，支持 GitHub 项目子路径与自定义域名。
+构建输出在 `web/dist/`，可以部署到 GitHub Pages 等静态托管服务。默认的 320 模型随源码提供，资源脚本下载并校验 640 模型和示例图片。模型来源、校验值和导出方法见 [模型说明](web/MODEL.md)。
 
-## GitHub Pages
+排查摄像头或目录权限时，可在浏览器控制台执行 `window.motionSnapDiagnostics()` 查看本地诊断记录。在网址后加 `?debug=1` 可记录每张截图的编码和写入阶段。
 
-目标仓库：<https://github.com/RIGCV/MotionSnapProMax>
+## GitHub Pages 部署
 
-1. 仓库 Settings → Pages → Build and deployment → Source 选择 **GitHub Actions**。
-2. 推送到 `main`，或手动运行 `Deploy MotionSnap Web` 工作流。
-3. 工作流安装锁定依赖，下载并验证模型 SHA256，测试、构建、发布。
-4. 默认网址：<https://rigcv.github.io/MotionSnapProMax/>。
-
-320 模型（约 9.8 MB）随源码提交，保证导出版本可复现；640 模型和运行时在构建时获取并校验。模型文件校验不通过时构建会失败，不会悄悄更换模型。
-
-## 模型与边界
-
-当前使用官方 `v8.4.0` assets release 的 YOLO26n 权重：320 模型在本地导出，640 模型使用官方 ONNX 文件。两者均为 FP32，固定输入 `[1,3,S,S]`，端到端输出 `[1,300,6]`。坐标采用等比例 letterbox 与反变换；不额外执行 NMS。详细来源和校验值见 `web/MODEL.md`。
-
-跟踪器采用类别约束、IoU 和预测中心匹配，不包含人脸识别或 ReID。遮挡、交叉和较低帧率可能导致编号变化。运动状态表示相对于画面的位移，适用于固定机位，不代表真实世界速度。相机移动时背景目标也可能显示移动。
-
-检测频率选项只改变处理频率，模型精度选项会加载真正不同输入尺寸的模型。CPU 回退功能可用，但低端设备不保证实时帧率。页面隐藏时停止监测并释放摄像头，浏览器关闭后不继续监控。当前仅支持浏览器摄像头，不直接连接 RTSP 网络摄像头。
-
-摄像头请求等待上限为 20 秒，播放启动或视频时间戳停止更新上限为 10 秒，模型加载上限为 60 秒。超时停止监测并释放已经取得的视频流。浏览器尚未返回的权限/设备请求无法强制取消，其返回后立即释放，期间禁止重复请求。纯黑但仍持续输出的画面不作为断流判据，避免把暗室误认为设备故障。
+在仓库的 **Settings → Pages → Build and deployment** 中，将 **Source** 设置为 **GitHub Actions**。推送 Web 应用变更到 `main` 会触发测试、构建和发布，也可以手动运行 [Deploy MotionSnap Pro Max](.github/workflows/deploy-pages.yml) 工作流。
 
 ## 项目结构
 
-```text
-web/src/                 网页界面、Worker 推理、坐标解析与跟踪
-web/scripts/             资源下载与本地运行时准备
-web/tests/               坐标、多目标与跟踪测试
-.github/workflows/       GitHub Pages 自动构建与发布
-main.py                  保留的原 Python 桌面入口
-```
+| 路径 | 内容 |
+| --- | --- |
+| `web/index.html`、`web/src/` | 网页入口、界面、摄像头管理、推理、跟踪和截图 |
+| `web/public/` | 静态资源和默认模型 |
+| `web/scripts/` | 资源下载、运行时准备和模型导出 |
+| `web/tests/` | 自动化测试和浏览器验证页面 |
+| `.github/workflows/` | GitHub Pages 部署 |
 
-原 Python 程序、打包脚本和配置保留，现有 `monitoring/`、`.venv/` 及构建产物只留本地，不上传仓库。迁移前完整备份保存在项目目录之外。
+## 许可
 
-## 第三方许可
-
-YOLO26n 模型和 Ultralytics 示例来自 Ultralytics，遵循其 AGPL-3.0 / Enterprise 授权条款；本项目没有变更第三方授权。ONNX Runtime 为 MIT，Vite 为 MIT。见 `web/THIRD_PARTY_NOTICES.md`。新增网页源码以 AGPL-3.0-only 提供（`web/LICENSE`），原有桌面文件的权利归原作者。
+MotionSnap Pro Max 源码采用 AGPL-3.0-only。模型、示例图片与依赖适用各自的许可。见 [项目许可](web/LICENSE) 和 [第三方声明](web/THIRD_PARTY_NOTICES.md)。

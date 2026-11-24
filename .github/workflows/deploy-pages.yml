@@ -1,4 +1,4 @@
-name: Deploy MotionSnap Web
+name: Deploy MotionSnap Pro Max
 on:
   push:
     branches: [main]
@@ -30,7 +30,7 @@ jobs:
       - name: Download and verify model and demo
         run: node scripts/download-assets.mjs
         working-directory: web
-      - name: Test detection and tracking
+      - name: Run web tests
         run: npm test
         working-directory: web
       - name: Build static website
