@@ -684,7 +684,7 @@ progress {
     display: none;
   }
 }
-@media (max-width: 900px) {
+@media (max-width: 900px), (orientation: portrait) {
   .app-shell {
     height: auto;
     min-height: 100dvh;
@@ -816,6 +816,7 @@ progress {
 }
 /* Short desktop windows keep every control visible by using compact rows. */
 @media (min-width:901px) and (max-height:850px){
+  .camera-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .action-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}
   .action-grid button{font-size:12px;padding:6px 3px;min-height:34px}
   .parameter-grid .field{display:grid;grid-template-columns:65px minmax(0,1fr);align-items:center;gap:3px}
@@ -830,4 +831,9 @@ progress {
 @media(min-width:901px) and (max-height:700px){
   .app-shell{min-height:620px}.workspace{grid-template-columns:minmax(0,1fr) 410px}
   .sidebar{gap:5px}.control-panel{padding:6px 8px}.stats>div{padding:3px 6px}.stats strong{font-size:18px}.stats .word-stat{font-size:14px;line-height:22px}.stats>div>span{font-size:10px}.status-row{margin-top:4px}.toggle-row{margin-top:3px}.folder-path{margin-top:4px;padding:4px 6px}.capture-status{margin-top:4px;font-size:10px}.gallery{margin-top:5px;min-height:32px}.preview-panel{min-height:76px}.target-heading{margin-top:4px}.bottom-note{display:none}
+}
+@media (orientation: portrait) {
+  .viewer-panel.portrait-source {
+    height: 70dvh;
+  }
 }

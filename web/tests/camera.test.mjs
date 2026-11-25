@@ -92,30 +92,91 @@ test("hung inference releases camera even when video frames continue arriving", 
   assert.match(h.nodes.get("statusText").textContent, /检测引擎长时间未响应/);
 });
 
-test("background page releases camera and does not automatically reopen", async () => {
-  const h = await appHarness();
-  await h.app.start();
+test("camera frames drive inference and automatic saves while preview rendering is suspended", async (t) => {
+  const h = await appHarness({ trackProcessor: true });
+  t.after(h.app.stop);
+  let released = 0;
+  h.state.now = 100;
+  const start = h.app.start();
+  await tick();
+  h.state.frameStream.enqueue({ displayWidth: 640, displayHeight: 360, close: () => released++ });
+  await start;
+  await tick();
+  const first = h.state.detections[0];
+  h.state.worker.onmessage({ data: { ...first, type: "result", tracks: [], processingMs: 10 } });
+  assert.equal(h.frames.size, 1);
+
   h.app.setHidden(true);
   h.documentEvents.get("visibilitychange")();
-  assert.equal(h.state.stopCount, 1);
-  assert.equal(h.app.getState().running, false);
+  assert.equal(h.frames.size, 0);
+  h.state.now += 40;
+  h.state.frameStream.enqueue({ displayWidth: 640, displayHeight: 360, hasMotion: true, close: () => released++ });
+  await tick();
+  assert.equal(h.state.detections.length, 2);
+  assert.equal(h.files.size, 1);
+  assert.equal(h.nodes.get("gallery").children.length, 0);
+  assert.equal(h.state.stopCount, 0);
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.app.getState().running, true);
+
   h.app.setHidden(false);
   h.documentEvents.get("visibilitychange")();
+  assert.equal(h.frames.size, 1);
+  assert.equal(h.nodes.get("gallery").children.length, 1);
   assert.equal(h.state.cameraCount, 1);
+  h.app.stop();
+  assert.equal(released, 2);
+  assert.ok(h.events.includes("reader-cancel"));
 });
 
-test("backgrounding pending permission releases late stream", async () => {
+test("switching tabs while a camera request is pending allows it to complete", async () => {
   const h = await appHarness();
   h.state.cameraWait = deferred();
   const pending = h.app.start();
   await tick();
   h.app.setHidden(true);
   h.documentEvents.get("visibilitychange")();
-  let stopped = 0;
-  h.state.cameraWait.resolve({ getTracks: () => [{ stop: () => stopped++ }] });
+  const track = { addEventListener() {}, stop() { h.state.stopCount++; } };
+  h.state.cameraWait.resolve({ getTracks: () => [track], getVideoTracks: () => [track] });
   await pending;
-  assert.equal(stopped, 1);
-  assert.equal(h.app.getState().running, false);
+  assert.equal(h.state.stopCount, 0);
+  assert.equal(h.app.getState().running, true);
+  h.app.stop();
+});
+
+test("rotation updates preview, inference and PNG geometry and drops old detections", async (t) => {
+  const h = await appHarness({ trackProcessor: true });
+  t.after(h.app.stop);
+  const start = h.app.start();
+  await tick();
+  const sendFrame = (displayWidth, displayHeight, hasMotion = false) =>
+    h.state.frameStream.enqueue({ displayWidth, displayHeight, hasMotion, close() {} });
+  sendFrame(640, 360);
+  await start;
+  await tick();
+
+  const first = h.state.detections[0];
+  const rotation = h.nodes.get("rotation");
+  rotation.value = "90";
+  rotation.onchange();
+  const canvas = h.nodes.get("canvas");
+  assert.deepEqual([canvas.width, canvas.height], [360, 640]);
+  h.state.worker.onmessage({ data: { ...first, type: "result", tracks: [{ id: 1, cls: 0 }], processingMs: 10 } });
+  assert.equal(h.nodes.get("targetCount").textContent, 0);
+  sendFrame(640, 360, true);
+  await tick();
+  const rotated = h.state.detections[1];
+  assert.deepEqual([rotated.bitmap.width, rotated.bitmap.height], [360, 640]);
+  assert.equal(h.files.size, 0, "first frame after rotation establishes a new motion baseline");
+  assert.equal(await h.app.captureFrame("manual"), true);
+  assert.deepEqual(h.state.encodedSizes[0], [360, 640]);
+
+  rotation.value = "0";
+  rotation.onchange();
+  sendFrame(480, 640);
+  await tick();
+  assert.deepEqual([canvas.width, canvas.height], [480, 640]);
+  assert.equal(h.nodes.get("sourceResolution").textContent, "480 × 640");
 });
 
 test("video play hanging releases acquired camera on watchdog timeout", async () => {

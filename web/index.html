@@ -20,7 +20,7 @@
         </div>
       </header>
       <main class="workspace">
-        <section class="viewer-panel" aria-label="完整摄像头画面">
+        <section class="viewer-panel" id="viewerPanel" aria-label="完整摄像头画面">
           <div class="panel-toolbar">
             <h1>
               <i id="liveDot" class="status-dot"></i
@@ -74,12 +74,23 @@
               ><button id="chooseFolder" class="secondary">选择保存目录</button>
               <button id="exit" class="danger" style="grid-column: 1 / -1">退出程序</button>
             </div>
-            <label class="field device-field"
-              ><span>摄像头</span
-              ><select id="cameraSelect">
-                <option value="">电脑内置摄像头（自动识别）</option>
-              </select></label
-            >
+            <div class="camera-fields">
+              <label class="field device-field">
+                <span>摄像头</span>
+                <select id="cameraSelect">
+                  <option value="">电脑内置摄像头（自动识别）</option>
+                </select>
+              </label>
+              <label class="field device-field">
+                <span>画面方向</span>
+                <select id="rotation">
+                  <option value="0">跟随摄像头</option>
+                  <option value="90">顺时针旋转 90°</option>
+                  <option value="180">旋转 180°</option>
+                  <option value="270">逆时针旋转 90°</option>
+                </select>
+              </label>
+            </div>
           </section>
           <section class="control-panel">
             <div class="section-heading">

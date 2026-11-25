@@ -25,9 +25,10 @@ let worker,
   running = false,
   starting = false,
   token = 0,
-  timer,
+  videoTimer,
   renderTimer,
   busy = false;
+let cameraReader, cameraFrame, frameLayout, frameRevision = 0, nextInferenceAt = 0;
 let inferenceStartedAt = 0;
 let cameraWatchdog, cameraPhase = "idle", cameraProgressAt = 0, cameraVideoTime = -1;
 function watchCamera(phase) {
@@ -44,7 +45,7 @@ function checkCameraHealth(now = performance.now()) {
     fail(new Error("检测引擎长时间未响应，已停止监测并释放摄像头，请重试。"));
     return;
   }
-  if (cameraPhase === "running" && video.readyState >= 2 &&
+  if (cameraPhase === "running" && !cameraReader && video.readyState >= 2 &&
       video.currentTime !== cameraVideoTime) {
     cameraVideoTime = video.currentTime;
     cameraProgressAt = now;
@@ -63,8 +64,8 @@ function checkCameraHealth(now = performance.now()) {
 let tracks = [],
   lastResultAt = 0,
   actualFPS = 0,
+  processingMs,
   lastVideoTime = -1,
-  lastMotionVideoTime = -1,
   motionDetector,
   motion = { active: false, regions: [] },
   directory,
@@ -74,6 +75,7 @@ let tracks = [],
   saved = 0;
 const gate = new CaptureGate(),
   previews = [];
+let galleryDirty = false;
 const status = (message, error = false) => {
   $("statusText").textContent = message;
   $("statusText").classList.toggle("error", error);
@@ -132,10 +134,9 @@ function renderResults() {
   }
 }
 function draw(target = ctx, timestamp = false) {
-  if (video.readyState < 2) return;
   const w = canvas.width,
     h = canvas.height;
-  target.drawImage(video, 0, 0, w, h);
+  drawCameraFrame(target, w, h);
   target.save();
   target.lineWidth = Math.max(2, w / 650);
   const font = Math.max(14, w / 65);
@@ -177,6 +178,53 @@ function draw(target = ctx, timestamp = false) {
   }
   target.restore();
 }
+function drawCameraFrame(target, width, height) {
+  const { rotation } = frameLayout;
+  if (!rotation) {
+    target.drawImage(cameraFrame, 0, 0, width, height);
+    return;
+  }
+  const sideways = rotation % 180 !== 0;
+  const drawWidth = sideways ? height : width;
+  const drawHeight = sideways ? width : height;
+  target.save();
+  target.translate(width / 2, height / 2);
+  target.rotate(rotation * Math.PI / 180);
+  target.drawImage(cameraFrame, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+  target.restore();
+}
+function updateFrameLayout() {
+  const width = cameraFrame.displayWidth ?? cameraFrame.videoWidth;
+  const height = cameraFrame.displayHeight ?? cameraFrame.videoHeight;
+  const nativeRotation = cameraFrame.rotation ?? 0;
+  const flip = cameraFrame.flip ?? false;
+  const rotation = Number($("rotation").value);
+  if (frameLayout?.width === width && frameLayout.height === height &&
+      frameLayout.nativeRotation === nativeRotation && frameLayout.flip === flip &&
+      frameLayout.rotation === rotation) return;
+
+  frameLayout = { width, height, nativeRotation, flip, rotation };
+  frameRevision++;
+  const sideways = rotation % 180 !== 0;
+  const outputWidth = sideways ? height : width;
+  const outputHeight = sideways ? width : height;
+  const maxSide = Math.max(outputWidth, outputHeight);
+  const scale = Math.min(1, 1600 / maxSide);
+  frame.width = canvas.width = Math.max(1, Math.round(outputWidth * scale));
+  frame.height = canvas.height = Math.max(1, Math.round(outputHeight * scale));
+  motionCanvas.width = Math.max(1, Math.round(256 * outputWidth / maxSide));
+  motionCanvas.height = Math.max(1, Math.round(256 * outputHeight / maxSide));
+  motionDetector = new MotionDetector(motionCanvas.width, motionCanvas.height);
+  motion = { active: false, regions: [] };
+  tracks = [];
+  nextInferenceAt = 0;
+  $("sourceResolution").textContent = `${outputWidth} × ${outputHeight}`;
+  $("viewerPanel").classList.toggle("portrait-source", outputHeight > outputWidth);
+  if (!document.hidden) {
+    renderResults();
+    renderMotionStatus();
+  }
+}
 function captureMessage(message, error = false) {
   $("captureStatus").textContent = message;
   $("captureStatus").classList.toggle("error", error);
@@ -201,6 +249,11 @@ function refreshCaptureStatus() {
   );
 }
 async function snapshotBlob() {
+  if (typeof OffscreenCanvas === "function" && OffscreenCanvas.prototype.convertToBlob) {
+    const shot = new OffscreenCanvas(canvas.width, canvas.height);
+    draw(shot.getContext("2d"), true);
+    return shot.convertToBlob({ type: "image/png" });
+  }
   const shot = document.createElement("canvas");
   shot.width = canvas.width;
   shot.height = canvas.height;
@@ -219,6 +272,14 @@ function addPreview(blob, name) {
   });
   previews.unshift({ url, name });
   if (previews.length > 4) URL.revokeObjectURL(previews.pop().url);
+  $("galleryCount").textContent = String(saved).padStart(2, "0");
+  $("savedCount").textContent = saved;
+  galleryDirty = true;
+  if (!document.hidden) renderGallery();
+}
+function renderGallery() {
+  if (!galleryDirty) return;
+  galleryDirty = false;
   $("gallery").replaceChildren();
   for (const item of previews) {
     const a = document.createElement("a");
@@ -229,9 +290,6 @@ function addPreview(blob, name) {
     img.src = item.url;
     img.alt = "已保存的带框截图";
     const label = document.createElement("span");
-    label.textContent = item.name
-      .slice(24, 30)
-      .replace(/(\d{2})(\d{2})(\d{2})/, "$1:$2:$3");
     label.textContent =
       item.name
         .match(/_(\d{2})(\d{2})(\d{2})_/)
@@ -240,8 +298,6 @@ function addPreview(blob, name) {
     a.append(img, label);
     $("gallery").append(a);
   }
-  $("galleryCount").textContent = String(saved).padStart(2, "0");
-  $("savedCount").textContent = saved;
 }
 async function captureFrame(kind = "auto") {
   if (gate.busy) return false;
@@ -253,7 +309,6 @@ async function captureFrame(kind = "auto") {
         active: kind === "manual" || motion.active,
         enabled:
           running &&
-          !document.hidden &&
           !!folder &&
           directoryWritable &&
           (kind === "manual" || $("autoCapture").checked),
@@ -272,7 +327,6 @@ async function captureFrame(kind = "auto") {
         if (
           currentToken !== token ||
           !running ||
-          document.hidden ||
           directory !== folder ||
           !directoryWritable ||
           (kind === "auto" && !$("autoCapture").checked)
@@ -316,38 +370,55 @@ async function captureFrame(kind = "auto") {
     updateButtons();
   }
 }
-function renderLive(now) {
-  try { renderLiveFrame(now); }
-  catch (error) { fail(error); }
+function requestPreview() {
+  if (renderTimer === undefined && !document.hidden)
+    renderTimer = requestAnimationFrame(renderLive);
 }
-function renderLiveFrame(now) {
-  if (!running) return;
-  if (!document.hidden && video.readyState >= 2) {
-    if (video.currentTime !== lastMotionVideoTime) {
-      lastMotionVideoTime = video.currentTime;
-      motionCtx.drawImage(video, 0, 0, motionCanvas.width, motionCanvas.height);
-      motion = motionDetector.analyze(
-        motionCtx.getImageData(0, 0, motionCanvas.width, motionCanvas.height)
-          .data,
-        $("sensitivity").value,
-      );
-      $("motionState").textContent = motion.active ? "有移动" : "静止";
-      $("motionState").classList.toggle("moving", motion.active);
-      $("stageStatus").textContent = motion.active
-        ? "发现画面移动"
-        : "正在监测";
-      void captureFrame("auto");
-    }
+function renderLive() {
+  renderTimer = undefined;
+  if (!running || document.hidden) return;
+  try {
     draw();
-    $("stageClock").textContent = new Date().toLocaleTimeString("zh-CN", {
+    const clock = new Date().toLocaleTimeString("zh-CN", {
       hour12: false,
     });
+    if ($("stageClock").textContent !== clock) $("stageClock").textContent = clock;
+  } catch (error) {
+    fail(error);
   }
-  renderTimer = requestAnimationFrame(renderLive);
+}
+function renderMotionStatus() {
+  $("motionState").textContent = motion.active ? "有移动" : "静止";
+  $("motionState").classList.toggle("moving", motion.active);
+  $("stageStatus").textContent = motion.active ? "发现画面移动" : "正在监测";
+}
+function acceptFrame(source) {
+  if (cameraFrame !== source) cameraFrame?.close?.();
+  cameraFrame = source;
+  const now = performance.now();
+  cameraProgressAt = now;
+  updateFrameLayout();
+  drawCameraFrame(motionCtx, motionCanvas.width, motionCanvas.height);
+  const wasMoving = motion.active;
+  motion = motionDetector.analyze(
+    motionCtx.getImageData(0, 0, motionCanvas.width, motionCanvas.height).data,
+    $("sensitivity").value,
+  );
+  if (!document.hidden && motion.active !== wasMoving) renderMotionStatus();
+  if (motion.active && directoryWritable && $("autoCapture").checked)
+    void captureFrame("auto");
+  if (!busy && now >= nextInferenceAt - 2) void submitFrame(now);
+  requestPreview();
+}
+function renderInferenceStatus() {
+  $("fps").textContent = actualFPS ? actualFPS.toFixed(1) : "—";
+  $("latency").textContent = processingMs === undefined ? "—" : Math.round(processingMs);
+  renderResults();
 }
 function handleResult(data) {
   if (data.token !== token) return;
   busy = false;
+  if (data.revision !== frameRevision) return;
   tracks = data.tracks;
   const now = performance.now();
   if (lastResultAt)
@@ -355,18 +426,22 @@ function handleResult(data) {
       ? actualFPS * 0.65 + (1000 / (now - lastResultAt)) * 0.35
       : 1000 / (now - lastResultAt);
   lastResultAt = now;
-  $("fps").textContent = actualFPS ? actualFPS.toFixed(1) : "—";
-  $("latency").textContent = Math.round(data.processingMs);
-  renderResults();
-  if (running) {
-    status("正在本地监测 · 画面移动检测与 AI 识别同时运行");
-    timer = setTimeout(
-      submitFrame,
-      Math.max(0, 1000 / Number($("speed").value) - data.processingMs),
-    );
+  processingMs = data.processingMs;
+  if (!document.hidden) {
+    renderInferenceStatus();
+    requestPreview();
   }
 }
 function releaseCamera() {
+  const reader = cameraReader;
+  cameraReader = null;
+  if (reader) {
+    reader.cancel().finally(() => reader.releaseLock())
+      .catch(error => logEvent("camera-reader", "failed", errorDetail(error)));
+  }
+  cameraFrame?.close?.();
+  cameraFrame = null;
+  frameLayout = null;
   // Release both references before touching Worker/UI code, including failures.
   const streams = new Set([stream, video.srcObject]);
   stream = null;
@@ -391,8 +466,9 @@ function stop({ keepStatus = false, dispose = false } = {}) {
   running = false;
   starting = false;
   busy = false;
-  clearTimeout(timer);
+  clearTimeout(videoTimer);
   cancelAnimationFrame(renderTimer);
+  renderTimer = undefined;
   releaseCamera();
   if (!cameraPending) releaseLease();
   if (dispose || wasBusy || !modelReady) {
@@ -492,8 +568,8 @@ async function start() {
   starting = true;
   lastResultAt = 0;
   actualFPS = 0;
+  processingMs = undefined;
   lastVideoTime = -1;
-  lastMotionVideoTime = -1;
 
   updateButtons();
   status("请选择截图保存文件夹，确认后开启摄像头…");
@@ -540,68 +616,102 @@ async function start() {
     }
     logEvent("camera", "acquired", { session: thisToken });
     stream = acquired;
-    video.srcObject = stream;
-    stream.getVideoTracks()[0].addEventListener("ended", () => {
+    const track = stream.getVideoTracks()[0];
+    track.addEventListener("ended", () => {
       if (thisToken === token) fail(new Error("摄像头连接已中断"));
     });
     watchCamera("playing");
-    await video.play();
-    if (thisToken !== token) return;
-    if (!video.videoWidth || !video.videoHeight || video.readyState < 2)
+    const reader = openFrameReader(track);
+    let firstFrame;
+    if (reader) {
+      cameraReader = reader;
+      const { value } = await reader.read();
+      if (thisToken !== token) {
+        value?.close();
+        return;
+      }
+      firstFrame = value;
+    } else {
+      video.srcObject = stream;
+      await video.play();
+      if (thisToken !== token) return;
+      if (video.videoWidth && video.videoHeight && video.readyState >= 2) {
+        firstFrame = video;
+        lastVideoTime = video.currentTime;
+      }
+    }
+    if (!firstFrame)
       throw new Error("摄像头没有返回有效画面，已停止采集，请检查系统相机。");
     enumerateCameras().catch(() => {});
-    const width = video.videoWidth,
-      height = video.videoHeight,
-      scale = Math.min(1, 1600 / Math.max(width, height));
-    frame.width = canvas.width = Math.round(width * scale);
-    frame.height = canvas.height = Math.round(height * scale);
-    motionCanvas.width = 256;
-    motionCanvas.height = Math.max(1, Math.round((256 * height) / width));
-    motionDetector = new MotionDetector(
-      motionCanvas.width,
-      motionCanvas.height,
-    );
     canvas.hidden = false;
     $("emptyState").hidden = true;
-    draw();
-    $("sourceResolution").textContent = `${width} × ${height}`;
-    worker.postMessage({ type: "reset" });
     starting = false;
     running = true;
     watchCamera("running");
+    status("正在本地监测 · 画面移动检测与 AI 识别同时运行");
     logEvent("monitoring", "started", { session: thisToken });
     updateButtons();
-    $("snapshot").disabled = false;
     $("stageLabel").hidden = false;
     $("stageClock").hidden = false;
     $("liveDot").classList.add("active");
     refreshCaptureStatus();
-    renderTimer = requestAnimationFrame(renderLive);
-    submitFrame();
+    acceptFrame(firstFrame);
+    if (reader) void readCameraFrames(reader, thisToken);
+    else videoTimer = setTimeout(pollVideo, 1000 / 30);
   } catch (error) {
     logEvent("camera-start", "failed", errorDetail(error));
     if (thisToken === token) fail(error);
   }
 }
-async function submitFrame() {
-  if (!running || busy) return;
-  if (
-    document.hidden ||
-    video.readyState < 2 ||
-    video.currentTime === lastVideoTime
-  ) {
-    timer = setTimeout(submitFrame, 100);
-    return;
-  }
-  const thisToken = token;
-  busy = true;
-  inferenceStartedAt = performance.now();
+function openFrameReader(track) {
+  if (!globalThis.MediaStreamTrackProcessor) return null;
   try {
-    lastVideoTime = video.currentTime;
-    frameCtx.drawImage(video, 0, 0, frame.width, frame.height);
-    const bitmap = await createImageBitmap(frame);
-    if (thisToken !== token) {
-      bitmap.close();
+    return new MediaStreamTrackProcessor({ track, maxBufferSize: 1 }).readable.getReader();
+  } catch (error) {
+    logEvent("camera-reader", "fallback", errorDetail(error));
+    return null;
+  }
+}
+async function readCameraFrames(reader, session) {
+  try {
+    while (session === token) {
+      const { done, value } = await reader.read();
+      if (session !== token) {
+        value?.close();
+        return;
+      }
+      if (done) throw new Error("摄像头连接已中断");
+      acceptFrame(value);
+    }
+  } catch (error) {
+    if (session === token) fail(error);
+  }
+}
+function pollVideo() {
+  if (!running) return;
+  try {
+    if (video.readyState >= 2 && video.videoWidth && video.videoHeight &&
+        video.currentTime !== lastVideoTime) {
+      lastVideoTime = video.currentTime;
+      acceptFrame(video);
+    }
+    if (running) videoTimer = setTimeout(pollVideo, 1000 / 30);
+  } catch (error) {
+    fail(error);
+  }
+}
+async function submitFrame(now) {
+  const thisToken = token, revision = frameRevision;
+  busy = true;
+  inferenceStartedAt = now;
+  nextInferenceAt = now + 1000 / Number($("speed").value);
+  let bitmap;
+  try {
+    drawCameraFrame(frameCtx, frame.width, frame.height);
+    bitmap = await createImageBitmap(frame);
+    if (thisToken !== token) return;
+    if (revision !== frameRevision) {
+      busy = false;
       return;
     }
     worker.postMessage(
@@ -609,14 +719,18 @@ async function submitFrame() {
         type: "detect",
         bitmap,
         confidence: Number($("confidence").value) / 100,
-        timestamp: performance.now(),
+        timestamp: now,
         still: false,
-        token,
+        token: thisToken,
+        revision,
       },
       [bitmap],
     );
+    bitmap = null;
   } catch (error) {
     if (thisToken === token) fail(error);
+  } finally {
+    bitmap?.close();
   }
 }
 $("start").onclick = start;
@@ -709,6 +823,15 @@ $("autoCapture").onchange = () => {
   } else refreshCaptureStatus();
 };
 $("sensitivity").onchange = () => motionDetector?.reset();
+$("rotation").onchange = () => {
+  if (!running) return;
+  try {
+    updateFrameLayout();
+    requestPreview();
+  } catch (error) {
+    fail(error);
+  }
+};
 $("confidence").oninput = () => {
   $("confidenceValue").textContent = $("confidence").value + "%";
 };
@@ -723,13 +846,15 @@ $("fullscreen").onclick = async () => {
   }
 };
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && (running || starting || stream || cameraPending)) {
-    stop({ dispose: true });
-    canvas.hidden = true;
-    $("emptyState").hidden = false;
-    status(cameraPending
-      ? "页面已停止监测，浏览器摄像头请求仍在结束；若一直未结束，请关闭本标签页。"
-      : "页面已切到后台，已停止监测并释放摄像头。返回后请点击开始监测。");
+  if (!document.hidden) renderGallery();
+  if (!running) return;
+  if (document.hidden) {
+    cancelAnimationFrame(renderTimer);
+    renderTimer = undefined;
+  } else {
+    renderMotionStatus();
+    renderInferenceStatus();
+    requestPreview();
   }
 });
 // No asynchronous work or confirmation dialog in teardown. A late media

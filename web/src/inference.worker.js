@@ -4,7 +4,7 @@ import { Tracker } from './tracker.js';
 import { MODELS } from './model-config.js';
 
 const tracker = new Tracker();
-let session, backend, drawing, context;
+let session, backend, drawing, context, trackingRevision;
 let SIZE=320;
 async function modelBytes(url,model) {
   const key=`${url}?sha256=${model.sha256}`;
@@ -65,7 +65,7 @@ async function warmup() {
   try {output=await session.run({[session.inputNames[0]]:input});}
   finally {input.dispose();if(output) Object.values(output).forEach(t=>t.dispose());}
 }
-async function detect({bitmap,confidence,timestamp,still,token}) {
+async function detect({bitmap,confidence,timestamp,still,token,revision}) {
   const started=performance.now();
   let input,output;
   try {
@@ -82,8 +82,12 @@ async function detect({bitmap,confidence,timestamp,still,token}) {
     const inferenceMs=performance.now()-inferenceStart;
     const tensor=output[session.outputNames[0]];
     const boxes=decodeDetections(tensor.data,tensor.dims,transform,confidence);
+    if (revision !== trackingRevision) {
+      tracker.reset();
+      trackingRevision = revision;
+    }
     const tracks=tracker.update(boxes,timestamp,bitmap.width,bitmap.height,still);
-    self.postMessage({type:'result',tracks,width:bitmap.width,height:bitmap.height,processingMs:performance.now()-started,inferenceMs,token});
+    self.postMessage({type:'result',tracks,width:bitmap.width,height:bitmap.height,processingMs:performance.now()-started,inferenceMs,token,revision});
   } finally {bitmap.close();input?.dispose();if(output) Object.values(output).forEach(t=>t.dispose());}
 }
 self.onmessage=async ({data})=>{

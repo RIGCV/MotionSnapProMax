@@ -16,7 +16,7 @@ export const deferred = () => {
 };
 export const tick = () => new Promise((r) => setImmediate(r));
 // Pure Node test double: no browser, camera or OS permission is accessed.
-export async function appHarness({ locks = mockLocks() } = {}) {
+export async function appHarness({ locks = mockLocks(), trackProcessor = false } = {}) {
   const events = [],
     windowEvents = new Map(),
     documentEvents = new Map(),
@@ -25,9 +25,11 @@ export async function appHarness({ locks = mockLocks() } = {}) {
     frames = new Map();
   let rafId = 0;
   const drawing = {
-    drawImage() {},
+    drawImage(source) { this.source = source; },
     save() {},
     restore() {},
+    translate() {},
+    rotate() {},
     strokeRect() {},
     fillRect() {},
     fillText() {},
@@ -37,7 +39,11 @@ export async function appHarness({ locks = mockLocks() } = {}) {
     lineTo() {},
     stroke() {},
     measureText: (t) => ({ width: t.length * 6 }),
-    getImageData: (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
+    getImageData(x, y, w, h) {
+      const data = new Uint8ClampedArray(w * h * 4);
+      if (this.source.hasMotion) data.fill(255, 0, Math.floor(w * h / 40) * 4);
+      return { data };
+    },
   };
   const state = {
     pickCount: 0,
@@ -51,6 +57,8 @@ export async function appHarness({ locks = mockLocks() } = {}) {
     pick: null,
     devices: [{ kind: "videoinput", label: "Integrated Camera", deviceId: "builtin" }],
     cameraConstraints: [],
+    detections: [],
+    encodedSizes: [],
   };
   class Element {
     constructor() {
@@ -63,6 +71,7 @@ export async function appHarness({ locks = mockLocks() } = {}) {
       this.style = { setProperty() {} };
       this.classList = { toggle() {}, add() {}, remove() {} };
       this.children = [];
+      this.drawing = { ...drawing };
     }
     replaceChildren(...items) {
       this.children = items;
@@ -77,10 +86,11 @@ export async function appHarness({ locks = mockLocks() } = {}) {
     addEventListener() {}
     removeAttribute() {}
     getContext() {
-      return drawing;
+      return this.drawing;
     }
     toBlob(callback, type) {
       events.push("encode");
+      state.encodedSizes.push([this.width, this.height]);
       if (type !== "image/png") throw new Error("wrong MIME");
       const deliver = () => callback(new Blob(["mock PNG payload"], { type }));
       if (state.encodeWait) state.encodeWait.promise.then(deliver);
@@ -100,6 +110,7 @@ export async function appHarness({ locks = mockLocks() } = {}) {
     confidence: "35",
     category: "all",
     sensitivity: "high",
+    rotation: "0",
   }))
     nodes.get(id).value = value;
   nodes.get("autoCapture").checked = true;
@@ -191,6 +202,7 @@ export async function appHarness({ locks = mockLocks() } = {}) {
   class Worker {
     postMessage(data) {
       events.push("worker-" + data.type);
+      if (data.type === "detect") state.detections.push(data);
       if (data.type === "init")
         queueMicrotask(() =>
           state.modelWait ? state.modelWait.promise.then(() => this.onmessage?.({ data: { type: "ready", size: 320, backend: "mock" } })) : this.onmessage?.({
@@ -198,6 +210,7 @@ export async function appHarness({ locks = mockLocks() } = {}) {
           }),
         );
     }
+    constructor() { state.worker = this; }
     terminate() {
       events.push("worker-terminate");
     }
@@ -230,7 +243,7 @@ export async function appHarness({ locks = mockLocks() } = {}) {
     Blob,
     DOMException,
     Date,
-    performance,
+    performance: { now: () => state.now ?? performance.now() },
     crypto: webcrypto,
     isSecureContext: true,
     location: { href: "https://test.invalid/", search: "" },
@@ -241,7 +254,15 @@ export async function appHarness({ locks = mockLocks() } = {}) {
       }
     },
     Worker,
-    createImageBitmap: async () => ({ close() {} }),
+    MediaStreamTrackProcessor: trackProcessor ? class {
+      constructor() {
+        this.readable = new ReadableStream({
+          start(controller) { state.frameStream = controller; },
+          cancel() { events.push("reader-cancel"); },
+        });
+      }
+    } : undefined,
+    createImageBitmap: async ({ width, height }) => ({ width, height, close() {} }),
     setTimeout,
     clearTimeout,
     requestAnimationFrame: (cb) => {
